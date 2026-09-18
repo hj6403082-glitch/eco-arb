@@ -75,14 +75,36 @@ jobs:
 
       - name: Start stack
         run: |
-          (cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 &)
-          (cd frontend && npm run dev -- --port 5173 &)
+          mkdir -p /tmp/eco-arb-logs
+          # Both servers bind 127.0.0.1 EXPLICITLY. Vite's default is
+          # `localhost`, which on a dual-stack runner resolves to ::1 first —
+          # the IPv4 health check below then polls forever and the job times
+          # out with the server apparently running. --strictPort turns a taken
+          # port into an immediate failure rather than a silent port shift.
+          (cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 \
+            > /tmp/eco-arb-logs/backend.log 2>&1 &)
+          (cd frontend && npm run dev -- --host 127.0.0.1 --port 5173 --strictPort \
+            > /tmp/eco-arb-logs/frontend.log 2>&1 &)
+
           for i in $(seq 1 30); do
-            curl -sf http://127.0.0.1:8000/api/health >/dev/null \
-              && curl -sf -o /dev/null http://127.0.0.1:5173/ && exit 0
+            if curl -sf http://127.0.0.1:8000/api/health >/dev/null \
+               && curl -sf -o /dev/null http://127.0.0.1:5173/; then
+              echo "stack up after $((i * 2))s"
+              exit 0
+            fi
             sleep 2
           done
-          echo "stack did not come up"; exit 1
+
+          echo "::error::stack did not come up within 60s"
+          echo "--- backend ---"; cat /tmp/eco-arb-logs/backend.log || true
+          echo "--- frontend ---"; cat /tmp/eco-arb-logs/frontend.log || true
+          exit 1
 
       - name: Smoke
         run: npm run smoke
+
+      - name: Server logs
+        if: failure()
+        run: |
+          echo "--- backend ---"; cat /tmp/eco-arb-logs/backend.log || true
+          echo "--- frontend ---"; cat /tmp/eco-arb-logs/frontend.log || true
