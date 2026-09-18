@@ -38,6 +38,12 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # Pages has to be switched on by hand once (Settings -> Pages -> Source:
+    # GitHub Actions). Until that happens actions/deploy-pages returns 404 and
+    # would redden the whole repo, so the deployment is advisory: the build
+    # above still fails loudly on a genuine breakage. Drop this line once Pages
+    # is enabled if you want a failed deployment to fail the run.
+    continue-on-error: true
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
