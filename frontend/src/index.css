@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/* Palette roles. Dark steps validated against the #1a1a19 chart surface
+   (dataviz six-checks: lightness band, chroma floor, CVD separation,
+   normal-vision floor, contrast — all pass). Terminal chrome sits a step
+   darker than the chart surface so panels read as inset. */
+@theme {
+  --color-void: #0e0e0d;
+  --color-surface: #161615;
+  --color-chart: #1a1a19;
+  --color-hair: #2e2e2b;
+  --color-ink: #ffffff;
+  --color-ink-2: #c3c2b7;
+  --color-ink-3: #8a8980;
+
+  --color-carbon: #3987e5;   /* series 1 — carbon intensity */
+  --color-renew: #199e70;    /* series 3 — renewable share, its own chart */
+
+  --color-good: #0ca30c;
+  --color-warning: #fab219;
+  --color-serious: #ec835a;
+  --color-critical: #d03b3b;
+
+  --font-mono: "JetBrains Mono", "SFMono-Regular", "Menlo", "Consolas", monospace;
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--color-void);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #2e2e2b; border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes pulse-dot { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+.pulse { animation: pulse-dot 1.6s ease-in-out infinite; }
