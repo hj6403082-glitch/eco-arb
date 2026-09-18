@@ -1,0 +1,385 @@
+/* In-browser stand-in for the FastAPI backend.
+ *
+ * Used only when no backend answers — a static deployment (GitHub Pages), or a
+ * dropped local server. It is a faithful port of backend/app: the same
+ * synthetic curve (carbon.py), the same breakpoint-enumerating engine
+ * (engine.py), the same state payload (main.py). The decision numbers it
+ * produces are identical to the server's for the same inputs.
+ *
+ * Two things stay real here rather than being faked:
+ *   - the forecast is pulled from the live UK Carbon Intensity API, which is
+ *     CORS-open, so a hosted page shows the same data the server would;
+ *   - hash_grind burns actual CPU through WebCrypto and the artifact is
+ *     recomputed from its seed to verify, exactly as the server does.
+ */
+
+const SLOT_MINUTES = 30;
+const SLOTS_PER_DAY = 48;
+const HORIZON_HOURS = 24;
+const MIN_SAVING_PCT = 1.0;
+const ALLOWED_SPEEDS = [1, 60, 360];
+const PRICE_FLOOR = 35.0, PRICE_CEIL = 190.0;
+const REN_AT_ZERO = 95.0, REN_AT_MAX = 5.0, CALIB_MAX = 400.0;
+const LOG_RING = 200;
+const SLOT_MS = SLOT_MINUTES * 60000;
+
+const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+const halfHourOfDay = (ms) => { const d = new Date(ms); return Math.floor((d.getUTCHours() * 60 + d.getUTCMinutes()) / SLOT_MINUTES); };
+const floorToSlot = (ms) => Math.floor(ms / SLOT_MS) * SLOT_MS;
+const round = (v, n) => { const f = 10 ** n; return Math.round(v * f) / f; };
+
+function syntheticDayProfile() {
+  const p = {};
+  for (let hh = 0; hh < SLOTS_PER_DAY; hh++) {
+    const hour = (hh * SLOT_MINUTES) / 60;
+    const v = 210
+      - 70 * Math.exp(-((hour - 3) ** 2) / 8)
+      - 55 * Math.exp(-((hour - 13) ** 2) / 6)
+      + 95 * Math.exp(-((hour - 18.5) ** 2) / 3.5)
+      + 30 * Math.exp(-((hour - 8) ** 2) / 2.5);
+    p[hh] = round(Math.max(20, v), 1);
+  }
+  return p;
+}
+const deriveRenewablePct = (i) =>
+  round(REN_AT_ZERO - (REN_AT_ZERO - REN_AT_MAX) * Math.min(Math.max(i / CALIB_MAX, 0), 1), 1);
+function modelPrice(intensity, startMs) {
+  const frac = Math.min(Math.max(intensity / CALIB_MAX, 0), 1);
+  const scarcity = PRICE_FLOOR + (PRICE_CEIL - PRICE_FLOOR) * frac;
+  const d = new Date(startMs);
+  const hour = d.getUTCHours() + d.getUTCMinutes() / 60;
+  return round(scarcity * (1 + 0.18 * Math.exp(-((hour - 18) ** 2) / 6)), 2);
+}
+
+/* ---------- decision engine: a direct port of backend/app/engine.py ---------- */
+function scoreWindow(slots, startMs, durationMinutes, energyKwh) {
+  const endMs = startMs + durationMinutes * 60000;
+  if (!slots.length || endMs > slots[slots.length - 1].t + SLOT_MS) return null;
+  let carbon = 0, cost = 0, covered = 0;
+  for (const s of slots) {
+    const slotEnd = s.t + SLOT_MS;
+    if (slotEnd <= startMs) continue;
+    if (s.t >= endMs) break;
+    const minutes = Math.max(0, (Math.min(endMs, slotEnd) - Math.max(startMs, s.t)) / 60000);
+    if (minutes <= 0) continue;
+    const share = minutes / durationMinutes;
+    covered += minutes;
+    carbon += energyKwh * share * s.intensity;
+    cost += (energyKwh * share * s.price) / 1000;
+  }
+  if (covered + 1e-6 < durationMinutes) return null;
+  return [carbon, cost];
+}
+
+function decide(job, slots, nowMs) {
+  const deadline = Date.parse(job.deadline_iso);
+  const durMs = job.duration_minutes * 60000;
+
+  // Candidates: now, every slot top, and — because carbon over a fixed window
+  // is piecewise-LINEAR in start time — every start whose END lands on a slot
+  // edge, plus the last feasible start. Missing the end-aligned ones can put
+  // the search 75% off the true optimum.
+  const candidates = [nowMs];
+  for (const s of slots) if (s.t > nowMs) candidates.push(s.t);
+  for (const s of slots) { const ea = s.t - durMs; if (ea > nowMs) candidates.push(ea); }
+  const latest = deadline - durMs;
+  if (latest >= nowMs) candidates.push(latest);
+
+  const base = scoreWindow(slots, nowMs, job.duration_minutes, job.energy_kwh);
+  if (!base) {
+    return { job_id: job.id, action: "RUN", run_at_iso: iso(nowMs), carbon_saved_pct: 0, cost_saved_pct: 0,
+      reason: "Forecast horizon does not cover this job's duration; running now.",
+      baseline_carbon_g: 0, optimal_carbon_g: 0, baseline_cost_gbp: 0, optimal_cost_gbp: 0,
+      window_end_iso: iso(nowMs + durMs), decided_at_iso: iso(nowMs),
+      slots_considered: slots.length, feasible_windows: 0 };
+  }
+  const [baseCarbon, baseCost] = base;
+  let bestStart = nowMs, bestCarbon = baseCarbon, bestCost = baseCost, feasible = 0;
+  for (const start of [...new Set(candidates)].sort((a, b) => a - b)) {
+    if (start + durMs > deadline) continue;
+    const scored = scoreWindow(slots, start, job.duration_minutes, job.energy_kwh);
+    if (!scored) continue;
+    feasible++;
+    if (scored[0] < bestCarbon - 1e-9) { bestCarbon = scored[0]; bestCost = scored[1]; bestStart = start; }
+  }
+  const deadlineBinding = nowMs + durMs >= deadline - SLOT_MS;
+  let carbonSavedPct = baseCarbon > 0 ? ((baseCarbon - bestCarbon) / baseCarbon) * 100 : 0;
+  let costSavedPct = baseCost > 0 ? ((baseCost - bestCost) / baseCost) * 100 : 0;
+  let action, runAt, reason;
+
+  if (bestStart <= nowMs || carbonSavedPct < MIN_SAVING_PCT) {
+    action = "RUN"; runAt = nowMs;
+    bestCarbon = baseCarbon; bestCost = baseCost; carbonSavedPct = 0; costSavedPct = 0;
+    reason = deadlineBinding
+      ? `Deadline at ${job.deadline_iso} leaves no room to defer a ${job.duration_minutes.toFixed(0)}-minute job. Running now.`
+      : `Grid is already near its cleanest reachable point (${slots[0].intensity.toFixed(0)} gCO2/kWh); no window before the deadline beats running now by more than ${MIN_SAVING_PCT.toFixed(0)}%.`;
+  } else {
+    action = "WAIT"; runAt = bestStart;
+    const delayH = (bestStart - nowMs) / 3600000;
+    const avgNow = job.energy_kwh ? baseCarbon / job.energy_kwh : 0;
+    const avgThen = job.energy_kwh ? bestCarbon / job.energy_kwh : 0;
+    reason = `Deferring ${delayH.toFixed(1)}h to ${iso(bestStart)} moves the job from ~${avgNow.toFixed(0)} to ~${avgThen.toFixed(0)} gCO2/kWh average intensity, cutting ${(baseCarbon - bestCarbon).toFixed(0)} gCO2 (${carbonSavedPct.toFixed(1)}%). Deadline ${job.deadline_iso} still met.`;
+  }
+  return { job_id: job.id, action, run_at_iso: iso(runAt),
+    carbon_saved_pct: round(carbonSavedPct, 2), cost_saved_pct: round(costSavedPct, 2), reason,
+    baseline_carbon_g: round(baseCarbon, 1), optimal_carbon_g: round(bestCarbon, 1),
+    baseline_cost_gbp: round(baseCost, 4), optimal_cost_gbp: round(bestCost, 4),
+    window_end_iso: iso(runAt + durMs), decided_at_iso: iso(nowMs),
+    slots_considered: slots.length, feasible_windows: feasible };
+}
+
+/* ---------- real work: chained SHA-256, same shape as executor.hash_grind ---------- */
+const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+async function sha256Hex(text) {
+  const data = new TextEncoder().encode(text);
+  return hex(await crypto.subtle.digest("SHA-256", data));
+}
+async function hashChain(seed, rounds) {
+  let digest = seed;
+  for (let i = 0; i < rounds; i++) digest = await sha256Hex(digest + ":" + i);
+  return digest;
+}
+
+export function createOfflineBackend() {
+  let profile = syntheticDayProfile();
+  let live = false, lastFetchIso = null, lastError = null;
+  let speed = 1, anchorReal = Date.now(), anchorVirtual = Date.now();
+  const jobs = new Map(), decisions = new Map(), logs = [];
+  const baselines = new Map(), actualCarbon = new Map();
+  const baselineCosts = new Map(), actualCost = new Map();
+  const artifacts = new Map();
+  let seq = 0, running = 0;
+
+  const vnow = () => anchorVirtual + (Date.now() - anchorReal) * speed;
+  const log = (level, text) => {
+    logs.push({ ts_iso: iso(Date.now()), virtual_iso: iso(vnow()), level, text });
+    if (logs.length > LOG_RING) logs.shift();
+  };
+  const buildSlot = (t) => {
+    const intensity = profile[halfHourOfDay(t)];
+    return { t, timestamp: iso(t), intensity_gco2_kwh: round(intensity, 1), intensity,
+             renewable_pct: deriveRenewablePct(intensity), price: modelPrice(intensity, t),
+             live: live && Boolean(liveRows[iso(t)]) };
+  };
+  let liveRows = {};
+  const forecast = (fromMs) => {
+    const first = floorToSlot(fromMs);
+    const count = Math.floor((HORIZON_HOURS * 60) / SLOT_MINUTES) + 1;
+    return Array.from({ length: count }, (_, k) => buildSlot(first + k * SLOT_MS));
+  };
+  const wire = (s) => ({ timestamp: s.timestamp, intensity_gco2_kwh: s.intensity_gco2_kwh,
+                         renewable_pct: s.renewable_pct, price: s.price, live: s.live });
+
+  async function refresh() {
+    try {
+      const r = await fetch("https://api.carbonintensity.org.uk/intensity/fw24h",
+        { headers: { Accept: "application/json" } });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const rows = (await r.json()).data || [];
+      const next = {}, exact = {};
+      for (const row of rows) {
+        const v = row?.intensity?.forecast;
+        if (v == null) continue;
+        const t = Date.parse(row.from);
+        next[halfHourOfDay(t)] = Number(v);
+        exact[iso(t)] = Number(v);
+      }
+      if (Object.keys(next).length < SLOTS_PER_DAY / 2) throw new Error("forecast too sparse");
+      const known = Object.keys(next).map(Number);
+      for (let hh = 0; hh < SLOTS_PER_DAY; hh++) {
+        if (!(hh in next)) {
+          const nearest = known.reduce((a, b) =>
+            Math.min(Math.abs(b - hh), SLOTS_PER_DAY - Math.abs(b - hh)) <
+            Math.min(Math.abs(a - hh), SLOTS_PER_DAY - Math.abs(a - hh)) ? b : a);
+          next[hh] = next[nearest];
+        }
+      }
+      profile = next; liveRows = exact; live = true;
+      lastFetchIso = iso(Date.now()); lastError = null;
+      log("INFO", "Live UK grid forecast loaded in-browser (48 half-hour slots).");
+      return true;
+    } catch (e) {
+      lastError = `${e.name}: ${e.message}`; live = false;
+      log("WARN", `Live forecast unavailable (${lastError}); using the offline curve.`);
+      return false;
+    }
+  }
+  refresh();
+
+  function redecide(job) {
+    const slots = forecast(vnow());
+    const d = decide(job, slots, vnow());
+    const prev = decisions.get(job.id);
+    decisions.set(job.id, d);
+    if (!baselines.has(job.id)) {
+      baselines.set(job.id, d.baseline_carbon_g);
+      baselineCosts.set(job.id, d.baseline_cost_gbp);
+    }
+    if (d.action === "WAIT") {
+      job.status = "WAITING"; job.run_at_iso = d.run_at_iso;
+      if (!prev) log("PLAN", `${job.name}: WAIT until ${d.run_at_iso} (-${d.carbon_saved_pct}% carbon).`);
+      else if (prev.action === "WAIT" && prev.run_at_iso !== d.run_at_iso)
+        log("REPLAN", `${job.name}: window moved to ${d.run_at_iso}.`);
+    } else {
+      job.run_at_iso = d.run_at_iso;
+      if (job.status === "QUEUED" || job.status === "WAITING") job.status = "QUEUED";
+      if (!prev) log("PLAN", `${job.name}: RUN now.`);
+    }
+    return d;
+  }
+
+  async function execute(job) {
+    if (running >= 4) return;
+    running++;
+    job.status = "RUNNING"; job.started_iso = iso(vnow()); job.progress = 0;
+    log("EXEC", `${job.name}: started (${job.workload}).`);
+    const seed = `${job.id}:${job.started_iso}`;
+    const totalRounds = job.workload === "matrix_train" ? 600 : 1200;
+    const chunk = 60;
+    let digest = seed;
+    for (let i = 0; i < totalRounds; i += chunk) {
+      const upto = Math.min(chunk, totalRounds - i);
+      for (let k = 0; k < upto; k++) digest = await sha256Hex(digest + ":" + (i + k));
+      job.progress = round((i + upto) / totalRounds, 3);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    const d = decisions.get(job.id);
+    const slots = forecast(Date.parse(job.run_at_iso));
+    const scored = scoreWindow(slots, Date.parse(job.run_at_iso), job.duration_minutes, job.energy_kwh);
+    actualCarbon.set(job.id, scored ? scored[0] : d?.optimal_carbon_g ?? 0);
+    actualCost.set(job.id, scored ? scored[1] : d?.optimal_cost_gbp ?? 0);
+    artifacts.set(job.id, { seed, rounds: totalRounds, digest });
+    job.result = { workload: job.workload, rounds: totalRounds, digest, seed };
+    job.progress = 1; job.status = "DONE"; job.finished_iso = iso(vnow());
+    log("DONE", `${job.name}: complete. Digest ${digest.slice(0, 16)}...`);
+    running--;
+  }
+
+  setInterval(() => {
+    const now = vnow();
+    for (const job of jobs.values()) {
+      if (job.status === "WAITING" || job.status === "QUEUED") {
+        redecide(job);
+        if (Date.parse(job.run_at_iso) <= now) {
+          if (Date.parse(job.deadline_iso) < now) { job.status = "MISSED"; log("WARN", `${job.name}: window missed.`); }
+          else execute(job);
+        }
+      }
+    }
+  }, 1000);
+
+  const totals = () => {
+    let saved = 0, emitted = 0, savedCost = 0, energy = 0, done = 0;
+    for (const [id, actual] of actualCarbon) {
+      const job = jobs.get(id);
+      if (!job || job.status !== "DONE") continue;
+      saved += (baselines.get(id) ?? actual) - actual;
+      emitted += actual;
+      savedCost += (baselineCosts.get(id) ?? 0) - (actualCost.get(id) ?? 0);
+      energy += job.energy_kwh; done++;
+    }
+    if (Math.abs(saved) < 1e-9) saved = 0;
+    if (Math.abs(savedCost) < 1e-12) savedCost = 0;
+    return { carbon_saved_g: round(saved, 1), carbon_emitted_g: round(emitted, 1),
+      carbon_saved_pct: round(saved + emitted > 0 ? (saved / (saved + emitted)) * 100 : 0, 2),
+      cost_saved_gbp: round(savedCost, 4), energy_scheduled_kwh: round(energy, 2), jobs_completed: done };
+  };
+
+  const makeJob = (body) => {
+    const now = vnow();
+    const hours = body.deadline_hours ?? 12;
+    return { id: `job-${String(++seq).padStart(3, "0")}`, name: body.name,
+      energy_kwh: body.energy_kwh, duration_minutes: body.duration_minutes ?? 30,
+      workload: body.workload ?? "hash_grind", status: "QUEUED",
+      deadline_iso: body.deadline_iso ?? iso(now + hours * 3600000),
+      submitted_iso: iso(now), run_at_iso: null, started_iso: null,
+      finished_iso: null, result: null, progress: 0 };
+  };
+
+  return {
+    offline: true,
+    async getState() {
+      const now = vnow();
+      const slots = forecast(now);
+      const impacts = {};
+      for (const [id, job] of jobs) {
+        if (job.status !== "DONE" || !actualCarbon.has(id)) continue;
+        const baseline = baselines.get(id) ?? 0, actual = actualCarbon.get(id);
+        impacts[id] = { baseline_carbon_g: baseline, estimated_carbon_g: round(actual, 3),
+          saved_carbon_g: round(baseline - actual, 3),
+          saved_pct: baseline ? round(((baseline - actual) / baseline) * 100, 2) : 0,
+          energy_basis: "operator estimate; not metered" };
+      }
+      return {
+        clock: { virtual_iso: iso(now), real_iso: iso(Date.now()), speed,
+                 allowed_speeds: ALLOWED_SPEEDS, compressed: speed > 1 },
+        grid: {
+          now: wire(buildSlot(floorToSlot(now))),
+          forecast: slots.map(wire),
+          status: { live, source: live ? "UK Carbon Intensity API /intensity/fw24h (fetched in-browser)"
+                                       : (lastFetchIso ? "cached UK forecast" : "offline fallback curve"),
+                    last_fetch_iso: lastFetchIso, last_error: lastError,
+                    cached: Boolean(lastError && lastFetchIso), profile_extension: true },
+          provenance: { intensity_gco2_kwh: speed > 1 ? "forecast replay"
+                          : (live ? "live forecast with profile extension"
+                                  : (lastFetchIso ? "cached forecast" : "synthetic fallback")),
+                        renewable_pct: "derived from intensity",
+                        price: "modelled (API carries no price)" },
+        },
+        jobs: [...jobs.values()].map((j) => ({ ...j })),
+        decisions: Object.fromEntries(decisions),
+        totals: totals(), impacts, logs: [...logs],
+        workloads: ["hash_grind", "matrix_train"], horizon_hours: HORIZON_HOURS,
+      };
+    },
+    async previewJob(body) {
+      const job = makeJob(body);
+      return { ...decide(job, forecast(vnow()), vnow()), job_id: "preview" };
+    },
+    async createJob(body) {
+      const job = makeJob(body);
+      jobs.set(job.id, job);
+      log("SUBMIT", `${job.name}: ${job.energy_kwh} kWh over ${job.duration_minutes} min.`);
+      const d = redecide(job);
+      if (d.action === "RUN") execute(job);
+      return { job: { ...job }, decision: d };
+    },
+    async cancelJob(id) {
+      const job = jobs.get(id);
+      if (job && job.status !== "RUNNING") { jobs.delete(id); decisions.delete(id); log("CANCEL", `${job.name}: cancelled.`); }
+      return { ok: true };
+    },
+    async setSpeed({ speed: s } = {}) {
+      const next = Number(s);
+      if (!ALLOWED_SPEEDS.includes(next)) throw new Error(`speed must be one of ${ALLOWED_SPEEDS.join(", ")}`);
+      anchorVirtual = vnow(); anchorReal = Date.now(); speed = next;
+      log("CLOCK", `TIME COMPRESSION ${next}x -- clock and grid feed only; workloads still run at real speed.`);
+      return { speed: next };
+    },
+    async seedDemo() {
+      const presets = [
+        { name: "climate-model-validation", energy_kwh: 48, duration_minutes: 45, deadline_hours: 12, workload: "hash_grind" },
+        { name: "renewable-scenario-matrix", energy_kwh: 12, duration_minutes: 30, deadline_hours: 12, workload: "matrix_train" },
+        { name: "grid-data-integrity-check", energy_kwh: 4, duration_minutes: 30, deadline_hours: 0.75, workload: "hash_grind" },
+      ];
+      for (const p of presets) if (![...jobs.values()].some((j) => j.name === p.name)) await this.createJob(p);
+      return { ok: true };
+    },
+    async resetAll() {
+      if ([...jobs.values()].some((j) => j.status === "RUNNING")) throw new Error("Wait for running workloads to finish before resetting");
+      jobs.clear(); decisions.clear(); baselines.clear(); actualCarbon.clear();
+      baselineCosts.clear(); actualCost.clear(); artifacts.clear(); logs.length = 0; seq = 0;
+      log("RESET", "Queue cleared.");
+      return { ok: true };
+    },
+    async refreshGrid() { await refresh(); return { live }; },
+    async getArtifact(id) {
+      const a = artifacts.get(id);
+      if (!a) throw new Error("No artifact for this job yet");
+      const recomputed = await hashChain(a.seed, a.rounds);
+      return { job_id: id, seed: a.seed, rounds: a.rounds, digest: a.digest,
+               recomputed_digest: recomputed, independently_verified: recomputed === a.digest,
+               note: "Recomputed in the browser from the recorded seed." };
+    },
+  };
+}

@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
+  // Relative asset URLs so the build works both at a domain root and under a
+  // GitHub Pages project subpath (/ECO---ARB/).
+  base: './',
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
