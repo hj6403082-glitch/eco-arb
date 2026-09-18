@@ -7,6 +7,12 @@ the carbon is lowest — then **actually runs the workload**.
 
 ![ECO-ARB terminal](docs/terminal.png)
 
+**[Open the hosted demo →](https://claude.ai/artifact/LdT7buxp11SeFMrYSmA2pg)** — the
+whole scheduler running in the browser, no install. It runs the *modelled* grid
+curve, because the host sandbox blocks outbound API calls; the engine, the
+compressed clock and the SHA-256 workload are the real implementations. Run
+locally (below) for live UK carbon data.
+
 ---
 
 ## Quickstart
