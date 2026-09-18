@@ -128,6 +128,96 @@ function decide(job, slots, nowMs) {
     slots_considered: slots.length, feasible_windows: feasible };
 }
 
+/* ---------- ranked recommendations: a port of engine.recommend ---------- */
+function candidateStarts(job, slots, nowMs) {
+  const durMs = job.duration_minutes * 60000;
+  const tagged = new Map([[nowMs, "now"]]);
+  for (const s of slots) if (s.t > nowMs && !tagged.has(s.t)) tagged.set(s.t, "slot-start");
+  for (const s of slots) { const ea = s.t - durMs; if (ea > nowMs && !tagged.has(ea)) tagged.set(ea, "slot-end"); }
+  const latest = Date.parse(job.deadline_iso) - durMs;
+  if (latest >= nowMs && !tagged.has(latest)) tagged.set(latest, "deadline");
+  return [...tagged.entries()].sort((a, b) => a[0] - b[0]);
+}
+
+function evaluateCandidates(job, slots, nowMs) {
+  const deadline = Date.parse(job.deadline_iso);
+  const durMs = job.duration_minutes * 60000;
+  const base = scoreWindow(slots, nowMs, job.duration_minutes, job.energy_kwh);
+  const [baseCarbon, baseCost] = base || [0, 0];
+  return candidateStarts(job, slots, nowMs).map(([start, why]) => {
+    const feasible = start + durMs <= deadline;
+    const scored = feasible ? scoreWindow(slots, start, job.duration_minutes, job.energy_kwh) : null;
+    const row = { start_iso: iso(start), end_iso: iso(start + durMs), breakpoint: why,
+      feasible: Boolean(scored), delay_hours: round((start - nowMs) / 3600000, 2) };
+    if (scored) {
+      row.carbon_g = round(scored[0], 1);
+      row.cost_gbp = round(scored[1], 4);
+      row.carbon_saved_pct = round(baseCarbon > 0 ? ((baseCarbon - scored[0]) / baseCarbon) * 100 : 0, 2);
+      row.cost_saved_pct = round(baseCost > 0 ? ((baseCost - scored[1]) / baseCost) * 100 : 0, 2);
+      row.avg_intensity = job.energy_kwh ? round(scored[0] / job.energy_kwh, 1) : 0;
+    } else {
+      Object.assign(row, { carbon_g: null, cost_gbp: null, carbon_saved_pct: null,
+                           cost_saved_pct: null, avg_intensity: null });
+    }
+    return row;
+  });
+}
+
+function rankWindows(job, slots, nowMs, limit = 4, spacingMinutes = 20, minGapPct = 1) {
+  const trace = evaluateCandidates(job, slots, nowMs);
+  const feasible = trace.filter((r) => r.feasible);
+  const runNow = trace.find((r) => r.breakpoint === "now" && r.feasible) || null;
+  const ceiling = runNow ? runNow.carbon_g : null;
+  const picked = [];
+  for (const row of [...feasible].sort((a, b) => a.carbon_g - b.carbon_g)) {
+    if (row.breakpoint === "now") continue;
+    if (ceiling != null && row.carbon_g >= ceiling - 1e-9) continue;
+    const start = Date.parse(row.start_iso);
+    // Distinct in time AND in outcome: two rows both reading "-30.7%" are noise.
+    if (picked.some((p) => Math.abs(start - Date.parse(p.start_iso)) < spacingMinutes * 60000
+        || Math.abs(row.carbon_saved_pct - p.carbon_saved_pct) < minGapPct)) continue;
+    picked.push(row);
+    if (picked.length >= limit - 1) break;
+  }
+  const options = picked.map((row, rank) => ({ ...row, recommended: rank === 0,
+    label: rank === 0 ? "Cleanest reachable window"
+      : (Date.parse(row.start_iso) < Date.parse(picked[0].start_iso)
+          ? "Near-optimal, earlier" : "Near-optimal alternative") }));
+  if (runNow) options.push({ ...runNow, label: "Run immediately, no deferral", recommended: !picked.length });
+  return { options, trace, candidates_considered: trace.length, feasible_windows: feasible.length,
+    baseline_carbon_g: runNow ? runNow.carbon_g : null,
+    deadline_iso: job.deadline_iso, now_iso: iso(nowMs) };
+}
+
+// A Decision for a window the operator picked, scored by the same scoreWindow
+// the engine optimises with, so the UI never reports a number the engine did
+// not compute. Port of engine.decision_for_window.
+function decisionForWindow(job, slots, nowMs, startMs) {
+  const durMs = job.duration_minutes * 60000;
+  const [baseCarbon, baseCost] = scoreWindow(slots, nowMs, job.duration_minutes, job.energy_kwh) || [0, 0];
+  const chosen = scoreWindow(slots, startMs, job.duration_minutes, job.energy_kwh);
+  const [carbon, cost] = chosen || [baseCarbon, baseCost];
+  const savedPct = baseCarbon > 0 ? ((baseCarbon - carbon) / baseCarbon) * 100 : 0;
+  const costSavedPct = baseCost > 0 ? ((baseCost - cost) / baseCost) * 100 : 0;
+  const immediate = startMs <= nowMs;
+  const runAt = immediate ? nowMs : startMs;
+  return {
+    job_id: job.id, action: immediate ? "RUN" : "WAIT", run_at_iso: iso(runAt),
+    carbon_saved_pct: round(immediate ? 0 : savedPct, 2),
+    cost_saved_pct: round(immediate ? 0 : costSavedPct, 2),
+    reason: immediate
+      ? "Operator chose to run immediately; no deferral."
+      : `Operator selected the ${iso(startMs)} window from the ranked recommendations: deferring ${((startMs - nowMs) / 3600000).toFixed(1)}h cuts ${(baseCarbon - carbon).toFixed(0)} gCO2 (${savedPct.toFixed(1)}%). Deadline ${job.deadline_iso} still met.`,
+    baseline_carbon_g: round(baseCarbon, 1),
+    optimal_carbon_g: round(immediate ? baseCarbon : carbon, 1),
+    baseline_cost_gbp: round(baseCost, 4),
+    optimal_cost_gbp: round(immediate ? baseCost : cost, 4),
+    window_end_iso: iso(runAt + durMs), decided_at_iso: iso(nowMs),
+    slots_considered: slots.length,
+    feasible_windows: evaluateCandidates(job, slots, nowMs).filter((r) => r.feasible).length,
+  };
+}
+
 /* ---------- real work: chained SHA-256, same shape as executor.hash_grind ---------- */
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 async function sha256Hex(text) {
@@ -259,7 +349,9 @@ export function createOfflineBackend() {
     const now = vnow();
     for (const job of jobs.values()) {
       if (job.status === "WAITING" || job.status === "QUEUED") {
-        redecide(job);
+        // An operator-chosen window is a commitment; re-optimising would move a
+        // job the user deliberately placed.
+        if (!job.pinned) redecide(job);
         if (Date.parse(job.run_at_iso) <= now) {
           if (Date.parse(job.deadline_iso) < now) { job.status = "MISSED"; log("WARN", `${job.name}: window missed.`); }
           else execute(job);
@@ -332,15 +424,30 @@ export function createOfflineBackend() {
         workloads: ["hash_grind", "matrix_train"], horizon_hours: HORIZON_HOURS,
       };
     },
+    async recommendWindows(body) {
+      return rankWindows(makeJob(body), forecast(vnow()), vnow());
+    },
     async previewJob(body) {
       const job = makeJob(body);
       return { ...decide(job, forecast(vnow()), vnow()), job_id: "preview" };
     },
     async createJob(body) {
       const job = makeJob(body);
+      job.pinned = Boolean(body.run_at_iso);
       jobs.set(job.id, job);
       log("SUBMIT", `${job.name}: ${job.energy_kwh} kWh over ${job.duration_minutes} min.`);
-      const d = redecide(job);
+      let d;
+      if (job.pinned) {
+        d = decisionForWindow(job, forecast(vnow()), vnow(), Date.parse(body.run_at_iso));
+        decisions.set(job.id, d);
+        baselines.set(job.id, d.baseline_carbon_g);
+        baselineCosts.set(job.id, d.baseline_cost_gbp);
+        job.run_at_iso = d.run_at_iso;
+        job.status = d.action === "WAIT" ? "WAITING" : "QUEUED";
+        log("PLAN", `${job.name}: operator chose ${d.run_at_iso}.`);
+      } else {
+        d = redecide(job);
+      }
       if (d.action === "RUN") execute(job);
       return { job: { ...job }, decision: d };
     },

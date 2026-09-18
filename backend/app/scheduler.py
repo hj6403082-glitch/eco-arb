@@ -132,6 +132,17 @@ def tick() -> None:
             if previous and previous.action == "WAIT" and parse_iso(previous.run_at_iso) <= vnow:
                 _dispatch(job, slots)
                 continue
+
+            # An operator-chosen window is a commitment, not a suggestion. Leave
+            # it where they put it and just wait for it; re-optimising would
+            # silently move a job the user deliberately placed.
+            if job.pinned and previous is not None:
+                job.status = "WAITING"
+                job.run_at_iso = previous.run_at_iso
+                if parse_iso(previous.run_at_iso) <= vnow:
+                    _dispatch(job, slots)
+                continue
+
             decision = decide(job, slots, vnow)
             previous = store.decisions.get(job.id)
 

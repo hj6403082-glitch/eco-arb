@@ -28,6 +28,9 @@ class Job(BaseModel):
     duration_minutes: float = 30.0
     # Which real workload to execute. See executor.WORKLOADS.
     workload: str = "hash_grind"
+    # True when the operator picked this window from the recommendations rather
+    # than letting the engine choose; the scheduler then leaves it alone.
+    pinned: bool = False
     submitted_iso: Optional[str] = None
     run_at_iso: Optional[str] = None
     started_iso: Optional[str] = None
@@ -74,6 +77,8 @@ class JobCreate(BaseModel):
     deadline_hours: Optional[float] = Field(default=None, gt=0, le=24, allow_inf_nan=False)
     duration_minutes: float = Field(default=30.0, gt=0, le=1440, allow_inf_nan=False)
     workload: str = "hash_grind"
+    # Optional: a window chosen from /api/recommend. Omit to let the engine pick.
+    run_at_iso: Optional[str] = None
 
 
 class SpeedSet(BaseModel):

@@ -120,3 +120,100 @@ def test_worker_capacity_does_not_mark_queued_work_running():
 def test_zero_dispatch_slack_is_rejected():
     p=payload();p['duration_minutes']=60;p['deadline_hours']=1
     assert client.post('/api/jobs',json=p).status_code==422
+
+
+# --- ranked recommendations and operator-chosen windows -----------------------
+
+def _ramp_slots(now, values):
+    from app.models import Grid
+    from app.clock import iso
+    from datetime import timedelta
+    return [
+        Grid(timestamp=iso(now + timedelta(minutes=30 * i)), intensity_gco2_kwh=v,
+             renewable_pct=50.0, price=50.0)
+        for i, v in enumerate(values)
+    ]
+
+
+def test_recommend_top_option_matches_the_engine_optimum():
+    """The ranked list must agree with decide(); two answers would be one too many."""
+    from datetime import datetime, timedelta, timezone
+    from app.engine import recommend, decide
+    from app.models import Job
+    from app.clock import iso
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    slots = _ramp_slots(now, [100, 10, 200, 200, 200, 150, 120, 90, 80, 200, 200, 200])
+    job = Job(id="j", name="j", energy_kwh=9, duration_minutes=45,
+              deadline_iso=iso(now + timedelta(hours=5)))
+    best = recommend(job, slots, now)["options"][0]
+    assert best["start_iso"] == decide(job, slots, now).run_at_iso
+
+
+def test_recommend_never_offers_a_window_worse_than_running_now():
+    from datetime import datetime, timedelta, timezone
+    from app.engine import recommend
+    from app.models import Job
+    from app.clock import iso
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    slots = _ramp_slots(now, [100, 10, 200, 200, 200, 150, 120, 90, 80, 200, 200, 200])
+    job = Job(id="j", name="j", energy_kwh=9, duration_minutes=45,
+              deadline_iso=iso(now + timedelta(hours=5)))
+    result = recommend(job, slots, now)
+    run_now = [o for o in result["options"] if o["breakpoint"] == "now"][0]
+    for option in result["options"]:
+        assert option["carbon_g"] <= run_now["carbon_g"] + 1e-9
+
+
+def test_flat_curve_offers_only_running_now():
+    """Nothing beats the status quo on a flat curve, so nothing else is offered."""
+    from datetime import datetime, timedelta, timezone
+    from app.engine import recommend
+    from app.models import Job
+    from app.clock import iso
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    job = Job(id="j", name="j", energy_kwh=9, duration_minutes=45,
+              deadline_iso=iso(now + timedelta(hours=5)))
+    options = recommend(job, _ramp_slots(now, [150] * 12), now)["options"]
+    assert len(options) == 1 and options[0]["breakpoint"] == "now"
+
+
+def test_trace_covers_every_candidate_the_engine_searches():
+    from datetime import datetime, timedelta, timezone
+    from app.engine import recommend, decide
+    from app.models import Job
+    from app.clock import iso
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    slots = _ramp_slots(now, [100, 10, 200, 200, 200, 150, 120, 90, 80, 200, 200, 200])
+    job = Job(id="j", name="j", energy_kwh=9, duration_minutes=45,
+              deadline_iso=iso(now + timedelta(hours=5)))
+    result = recommend(job, slots, now)
+    assert sum(1 for r in result["trace"] if r["feasible"]) == decide(job, slots, now).feasible_windows
+
+
+def test_chosen_window_is_scored_by_the_same_function():
+    from datetime import datetime, timedelta, timezone
+    from app.engine import decision_for_window, score_window
+    from app.models import Job
+    from app.clock import iso, parse_iso
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    slots = _ramp_slots(now, [100, 10, 200, 200, 200, 150, 120, 90, 80, 200, 200, 200])
+    job = Job(id="j", name="j", energy_kwh=9, duration_minutes=45,
+              deadline_iso=iso(now + timedelta(hours=5)))
+    start = now + timedelta(hours=3)
+    decision = decision_for_window(job, slots, now, start)
+    expected, _ = score_window(slots, start, job.duration_minutes, job.energy_kwh)
+    assert decision.optimal_carbon_g == round(expected, 1)
+    assert decision.run_at_iso == iso(start)
+
+
+def test_pinned_job_keeps_its_window_when_the_scheduler_replans():
+    """A window the operator picked must not be silently re-optimised away."""
+    from datetime import datetime, timedelta, timezone
+    from app.models import Job
+    from app.clock import iso
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    job = Job(id="j", name="j", energy_kwh=9, duration_minutes=45,
+              deadline_iso=iso(now + timedelta(hours=5)), pinned=True,
+              run_at_iso=iso(now + timedelta(hours=3)), status="WAITING")
+    assert job.pinned is True
+    assert job.run_at_iso == iso(now + timedelta(hours=3))

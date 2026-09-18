@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import config, scheduler as sched
 from .carbon import feed
 from .clock import clock, iso, parse_iso, real_now
-from .engine import decide
+from .engine import decide, decision_for_window, recommend
 from .executor import ARTIFACT_DIR, WORKLOADS, verify_hash_grind
 from .models import Job, JobCreate, SpeedSet
 from .store import store
@@ -107,6 +108,25 @@ def state() -> dict:
     }
 
 
+@app.post("/api/recommend")
+def recommend_windows(payload: JobCreate) -> dict:
+    """Rank the windows worth offering for a job, without queueing anything.
+
+    Returns the options the operator picks from plus the full scored candidate
+    trace, which is what the decision view animates. Read-only, like /api/preview.
+    """
+    vnow = clock.now()
+    probe = Job(
+        id="recommend",
+        name=payload.name,
+        energy_kwh=payload.energy_kwh,
+        deadline_iso=_resolve_deadline(payload, vnow),
+        duration_minutes=payload.duration_minutes,
+        workload=payload.workload,
+    )
+    return recommend(probe, feed.forecast(vnow), vnow)
+
+
 @app.post("/api/jobs")
 def create_job(payload: JobCreate) -> dict:
     if payload.workload not in WORKLOADS:
@@ -120,8 +140,19 @@ def create_job(payload: JobCreate) -> dict:
         status="QUEUED",
         duration_minutes=payload.duration_minutes,
         workload=payload.workload,
+        pinned=payload.run_at_iso is not None,
         submitted_iso=iso(vnow),
     )
+    chosen: Optional[datetime] = None
+    if payload.run_at_iso is not None:
+        try:
+            chosen = parse_iso(payload.run_at_iso)
+        except (ValueError, TypeError):
+            raise HTTPException(422, "run_at_iso is not a valid ISO-8601 timestamp")
+        if chosen + timedelta(minutes=job.duration_minutes) > parse_iso(job.deadline_iso):
+            raise HTTPException(422, "the chosen window would finish after the deadline")
+        if chosen < vnow - timedelta(minutes=config.SLOT_MINUTES):
+            raise HTTPException(422, "the chosen window is already in the past")
     with store.lock:
         store.add(job)
         store.log(
@@ -130,7 +161,17 @@ def create_job(payload: JobCreate) -> dict:
             "INFO",
         )
         # Decide immediately so the terminal never shows an unexplained QUEUED row.
-        decision = decide(job, feed.forecast(vnow), vnow)
+        slots = feed.forecast(vnow)
+        if chosen is not None:
+            decision = decision_for_window(job, slots, vnow, chosen)
+            store.log(f"{job.id} PINNED -> operator chose {decision.run_at_iso}", "PLAN")
+        else:
+            decision = decide(job, slots, vnow)
+        # Reflect the plan on the job immediately, so the row the caller gets
+        # back already shows its window rather than waiting for the next tick.
+        job.run_at_iso = decision.run_at_iso
+        if decision.action == "WAIT":
+            job.status = "WAITING"
         store.set_decision(decision)
         with store.lock:
             store.baselines.setdefault(job.id, decision.baseline_carbon_g)

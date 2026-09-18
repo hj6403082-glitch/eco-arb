@@ -176,3 +176,167 @@ def decide(job: Job, slots: List[Grid], now: datetime) -> Decision:
         slots_considered=len(slots),
         feasible_windows=feasible,
     )
+
+
+def _candidate_starts(job: Job, slots: List[Grid], now: datetime) -> List[Tuple[datetime, str]]:
+    """Every start that can be optimal, tagged with why it is a breakpoint.
+
+    Identical set to the one `decide` searches -- this is the same enumeration,
+    just kept rather than discarded, so the UI can show the real search.
+    """
+    deadline = parse_iso(job.deadline_iso)
+    tagged: dict[datetime, str] = {now: "now"}
+    for slot in slots:
+        start = parse_iso(slot.timestamp)
+        if start > now:
+            tagged.setdefault(start, "slot-start")
+    for slot in slots:
+        end_aligned = parse_iso(slot.timestamp) - timedelta(minutes=job.duration_minutes)
+        if end_aligned > now:
+            tagged.setdefault(end_aligned, "slot-end")
+    latest = deadline - timedelta(minutes=job.duration_minutes)
+    if latest >= now:
+        tagged.setdefault(latest, "deadline")
+    return sorted(tagged.items())
+
+
+def evaluate_candidates(job: Job, slots: List[Grid], now: datetime) -> List[dict]:
+    """Score every candidate start. This is the trace the decision theatre draws."""
+    deadline = parse_iso(job.deadline_iso)
+    baseline = score_window(slots, now, job.duration_minutes, job.energy_kwh)
+    baseline_carbon = baseline[0] if baseline else 0.0
+    baseline_cost = baseline[1] if baseline else 0.0
+
+    rows: List[dict] = []
+    for start, why in _candidate_starts(job, slots, now):
+        feasible = start + timedelta(minutes=job.duration_minutes) <= deadline
+        scored = score_window(slots, start, job.duration_minutes, job.energy_kwh) if feasible else None
+        row = {
+            "start_iso": iso(start),
+            "end_iso": iso(start + timedelta(minutes=job.duration_minutes)),
+            "breakpoint": why,
+            "feasible": bool(scored),
+            "delay_hours": round((start - now).total_seconds() / 3600.0, 2),
+        }
+        if scored:
+            carbon, cost = scored
+            row.update(
+                carbon_g=round(carbon, 1),
+                cost_gbp=round(cost, 4),
+                carbon_saved_pct=round(
+                    (baseline_carbon - carbon) / baseline_carbon * 100.0 if baseline_carbon > 0 else 0.0, 2
+                ),
+                cost_saved_pct=round(
+                    (baseline_cost - cost) / baseline_cost * 100.0 if baseline_cost > 0 else 0.0, 2
+                ),
+                avg_intensity=round(carbon / job.energy_kwh, 1) if job.energy_kwh else 0.0,
+            )
+        else:
+            row.update(carbon_g=None, cost_gbp=None, carbon_saved_pct=None,
+                       cost_saved_pct=None, avg_intensity=None)
+        rows.append(row)
+    return rows
+
+
+def recommend(
+    job: Job,
+    slots: List[Grid],
+    now: datetime,
+    limit: int = 4,
+    spacing_minutes: float = 20.0,
+    min_gap_pct: float = 1.0,
+) -> dict:
+    """Top-N genuinely distinct windows, best first, with 'run now' always offered.
+
+    Adjacent breakpoints often differ by a minute and a fraction of a gram, which
+    is not a choice. An option has to be both `spacing_minutes` away from every
+    option already picked AND at least `min_gap_pct` percentage points different
+    in savings -- two rows that both read "-30.7%" are noise, not alternatives.
+    """
+    trace = evaluate_candidates(job, slots, now)
+    feasible = [r for r in trace if r["feasible"]]
+    run_now = next((r for r in trace if r["breakpoint"] == "now" and r["feasible"]), None)
+
+    # Only windows that actually beat running now are worth offering. Most
+    # breakpoints are worse than the status quo; presenting those as
+    # "recommendations" would be actively misleading.
+    ceiling = run_now["carbon_g"] if run_now else None
+    picked: List[dict] = []
+    for row in sorted(feasible, key=lambda r: r["carbon_g"]):
+        if row["breakpoint"] == "now":
+            continue
+        if ceiling is not None and row["carbon_g"] >= ceiling - 1e-9:
+            continue
+        start = parse_iso(row["start_iso"])
+        if any(
+            abs((start - parse_iso(p["start_iso"])).total_seconds()) < spacing_minutes * 60
+            or abs(row["carbon_saved_pct"] - p["carbon_saved_pct"]) < min_gap_pct
+            for p in picked
+        ):
+            continue
+        picked.append(row)
+        if len(picked) >= limit - 1:
+            break
+
+    options = []
+    for rank, row in enumerate(picked):
+        label = "Cleanest reachable window" if rank == 0 else (
+            "Near-optimal, earlier" if parse_iso(row["start_iso"]) < parse_iso(picked[0]["start_iso"])
+            else "Near-optimal alternative"
+        )
+        options.append({**row, "label": label, "recommended": rank == 0})
+    if run_now:
+        options.append({**run_now, "label": "Run immediately, no deferral", "recommended": not picked})
+
+    return {
+        "options": options,
+        "trace": trace,
+        "candidates_considered": len(trace),
+        "feasible_windows": len(feasible),
+        "baseline_carbon_g": run_now["carbon_g"] if run_now else None,
+        "deadline_iso": job.deadline_iso,
+        "now_iso": iso(now),
+    }
+
+
+def decision_for_window(job: Job, slots: List[Grid], now: datetime, start: datetime) -> Decision:
+    """A Decision describing a window the operator picked, scored the same way.
+
+    Used when a recommendation is accepted: the numbers must come from the same
+    `score_window` the engine optimises with, or the UI would report savings the
+    engine never computed.
+    """
+    baseline = score_window(slots, now, job.duration_minutes, job.energy_kwh)
+    chosen = score_window(slots, start, job.duration_minutes, job.energy_kwh)
+    baseline_carbon, baseline_cost = baseline if baseline else (0.0, 0.0)
+    carbon, cost = chosen if chosen else (baseline_carbon, baseline_cost)
+
+    saved_pct = (baseline_carbon - carbon) / baseline_carbon * 100.0 if baseline_carbon > 0 else 0.0
+    cost_saved_pct = (baseline_cost - cost) / baseline_cost * 100.0 if baseline_cost > 0 else 0.0
+    immediate = start <= now
+    if immediate:
+        reason = "Operator chose to run immediately; no deferral."
+    else:
+        delay_h = (start - now).total_seconds() / 3600.0
+        reason = (
+            f"Operator selected the {iso(start)} window from the ranked "
+            f"recommendations: deferring {delay_h:.1f}h cuts "
+            f"{baseline_carbon - carbon:.0f} gCO2 ({saved_pct:.1f}%). "
+            f"Deadline {job.deadline_iso} still met."
+        )
+    return Decision(
+        job_id=job.id,
+        action="RUN" if immediate else "WAIT",
+        run_at_iso=iso(now if immediate else start),
+        carbon_saved_pct=round(0.0 if immediate else saved_pct, 2),
+        cost_saved_pct=round(0.0 if immediate else cost_saved_pct, 2),
+        reason=reason,
+        baseline_carbon_g=round(baseline_carbon, 1),
+        optimal_carbon_g=round(baseline_carbon if immediate else carbon, 1),
+        baseline_cost_gbp=round(baseline_cost, 4),
+        optimal_cost_gbp=round(baseline_cost if immediate else cost, 4),
+        window_end_iso=iso((now if immediate else start) + timedelta(minutes=job.duration_minutes)),
+        decided_at_iso=iso(now),
+        slots_considered=len(slots),
+        feasible_windows=sum(1 for r in evaluate_candidates(job, slots, now) if r["feasible"]),
+    )

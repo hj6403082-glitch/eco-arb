@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import * as api from "./lib/api";
 import { EnergyField, EnergyStage } from "./components/EnergyScene";
 
@@ -273,7 +273,100 @@ function Forecast({ slots, decision, horizon, setHorizon }) {
     </Panel>
   );
 }
-function Composer({ onClose, onSubmit }) {
+
+/* The engine already enumerates every window that can be optimal and throws the
+ * losers away. DecisionTheatre replays that real search: each candidate the
+ * engine scored, in time order, with the running best. Nothing here is staged --
+ * `trace` is exactly what the engine evaluated. */
+function DecisionTheatre({ result, chosenIso, motion }) {
+  const trace = useMemo(
+    () => (result?.trace || []).filter((r) => r.feasible),
+    [result],
+  );
+  // Reduced motion jumps straight to the answer; the parent remounts this with a
+  // fresh key when the search changes, so the starting step is initial state
+  // rather than an effect that resets it.
+  const last = Math.max(0, trace.length - 1);
+  const [step, setStep] = useState(() => (motion ? 0 : last));
+  useEffect(() => {
+    if (!motion || step >= last) return;
+    const id = setTimeout(() => setStep((s) => s + 1), step < 4 ? 150 : 68);
+    return () => clearTimeout(id);
+  }, [step, last, motion]);
+
+  if (!trace.length) return null;
+  const seen = trace.slice(0, step + 1);
+  const current = seen.at(-1);
+  const best = seen.reduce((a, b) => (b.carbon_g < a.carbon_g ? b : a), seen[0]);
+  const carbons = trace.map((r) => r.carbon_g);
+  const lo = Math.min(...carbons), hi = Math.max(...carbons);
+  const W = 560, H = 132, pad = 8;
+  const x = (i) => pad + (i / Math.max(1, trace.length - 1)) * (W - pad * 2);
+  const y = (c) => H - pad - ((c - lo) / Math.max(1e-9, hi - lo)) * (H - pad * 2);
+  const done = step >= last;
+
+  return (
+    <div className="theatre">
+      <div className="theatre-head">
+        <span className="eyebrow">
+          <i className={"pulse" + (done ? " done" : "")} />
+          {done ? "SEARCH COMPLETE" : "ENUMERATING CANDIDATE WINDOWS"}
+        </span>
+        <span className="theatre-count">
+          <b>{seen.length}</b> / {trace.length} scored
+          <small> · {result.candidates_considered} breakpoints</small>
+        </span>
+      </div>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="theatre-plot"
+        role="img"
+        aria-label={`Decision search: ${trace.length} feasible windows scored, best ${Math.round(best.carbon_g)} grams CO2 at ${best.start_iso}`}
+      >
+        <line x1={pad} y1={y(best.carbon_g)} x2={W - pad} y2={y(best.carbon_g)} className="theatre-bestline" />
+        {trace.map((r, i) => {
+          const state = i > step ? "pending" : r.start_iso === best.start_iso ? "best" : "rejected";
+          return (
+            <circle key={r.start_iso} cx={x(i)} cy={y(r.carbon_g)} r={state === "best" ? 4.2 : 2.1}
+                    className={"theatre-dot " + state} />
+          );
+        })}
+        <line x1={x(step)} y1={pad} x2={x(step)} y2={H - pad} className="theatre-cursor" />
+      </svg>
+      <div className="theatre-rows">
+        {[...seen].slice(-3).reverse().map((r) => (
+          <div key={r.start_iso}
+               className={"theatre-row" + (r.start_iso === best.start_iso ? " best" : "")}>
+            <span className="t-time">{time(r.start_iso)}</span>
+            <span className="t-carbon">{fmt(r.carbon_g, 0)} g</span>
+            <span className="t-tag">{r.breakpoint}</span>
+            <span className="t-verdict">
+              {r.start_iso === best.start_iso ? "★ best so far" : "rejected"}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="theatre-foot">
+        <span>
+          {done ? "OPTIMUM " : "BEST SO FAR "}
+          <b>{time(best.carbon_g === current?.carbon_g ? current.start_iso : best.start_iso)} UTC</b>
+          <small> · {best.breakpoint === "slot-end" ? "end-aligned breakpoint" : best.breakpoint === "now" ? "run now" : best.breakpoint}</small>
+        </span>
+        <button type="button" className="text-btn" onClick={() => setStep(0)}>
+          <Icon name="refresh" size={13} /> Replay search
+        </button>
+      </div>
+      {chosenIso && chosenIso !== best.start_iso && (
+        <p className="theatre-note">
+          You picked {time(chosenIso)} — {fmt(
+            (trace.find((r) => r.start_iso === chosenIso)?.carbon_g ?? 0) - best.carbon_g, 0,
+          )} g above the optimum, and still well under running now.
+        </p>
+      )}
+    </div>
+  );
+}
+function Composer({ onClose, onSubmit, motion }) {
   const [form, setForm] = useState({
     name: "nightly-climate-model",
     energy_kwh: 12,
@@ -281,7 +374,8 @@ function Composer({ onClose, onSubmit }) {
     deadline_hours: 12,
     workload: "hash_grind",
   });
-  const [preview, setPreview] = useState(null);
+  const [rec, setRec] = useState(null);
+  const [chosen, setChosen] = useState(null); // null = let the engine choose
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const ref = useRef(null);
@@ -312,10 +406,11 @@ function Composer({ onClose, onSubmit }) {
     const id = setTimeout(
       () =>
         api
-          .previewJob(form)
+          .recommendWindows(form)
           .then((d) => {
             if (live) {
-              setPreview(d);
+              setRec(d);
+              setChosen(null);
               setErr("");
             }
           })
@@ -330,7 +425,8 @@ function Composer({ onClose, onSubmit }) {
     };
   }, [form]);
   const field = (k, v) => {
-    setPreview(null);
+    setRec(null);
+    setChosen(null);
     setForm((f) => ({ ...f, [k]: v }));
   };
   return (
@@ -364,7 +460,7 @@ function Composer({ onClose, onSubmit }) {
             e.preventDefault();
             setBusy(true);
             try {
-              await onSubmit(form);
+              await onSubmit(chosen ? { ...form, run_at_iso: chosen } : form);
               onClose();
             } catch (e) {
               setErr(e.message);
@@ -439,28 +535,55 @@ function Composer({ onClose, onSubmit }) {
               <span>Flexible · 24h</span>
             </span>
           </label>
-          <div className="preview-box">
-            <span className="eyebrow">LIVE SCHEDULING PREVIEW</span>
-            {preview ? (
+          <div className="rec-box">
+            <span className="eyebrow">RECOMMENDED EXECUTION WINDOWS</span>
+            {rec ? (
               <>
-                <div>
-                  <Badge tone="green">
-                    {preview.action === "WAIT"
-                      ? "DEFER TO " + time(preview.run_at_iso) + " UTC"
-                      : "RUN NOW"}
-                  </Badge>
-                  <strong>
-                    {fmt(preview.carbon_saved_pct, 1)}% <small>less CO₂</small>
-                  </strong>
-                </div>
-                <p>
-                  {preview.feasible_windows} feasible windows evaluated.{" "}
-                  {fmt(preview.baseline_carbon_g / 1000, 2)} →{" "}
-                  {fmt(preview.optimal_carbon_g / 1000, 2)} kg estimated CO₂.
-                </p>
+                <ul className="rec-list">
+                  {rec.options.map((o) => {
+                    const isNow = o.breakpoint === "now";
+                    const active =
+                      chosen === o.start_iso ||
+                      (chosen === null && o.recommended);
+                    return (
+                      <li key={o.start_iso}>
+                        <button
+                          type="button"
+                          className={"rec-option" + (active ? " active" : "")}
+                          aria-pressed={active}
+                          onClick={() => setChosen(o.start_iso)}
+                        >
+                          <span className="rec-when">
+                            <b>{isNow ? "Run now" : time(o.start_iso) + " UTC"}</b>
+                            <small>{o.label}</small>
+                          </span>
+                          <span className="rec-num rec-carbon">
+                            <b>{isNow ? "—" : "−" + fmt(o.carbon_saved_pct, 1) + "%"}</b>
+                            <small>CO₂</small>
+                          </span>
+                          <span className="rec-num">
+                            <b>{isNow ? "—" : "−" + fmt(o.cost_saved_pct, 0) + "%"}</b>
+                            <small>cost</small>
+                          </span>
+                          <span className="rec-num">
+                            <b>{isNow ? "now" : "+" + fmt(o.delay_hours, 1) + "h"}</b>
+                            <small>delay</small>
+                          </span>
+                          {o.recommended && <span className="rec-star">★</span>}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <DecisionTheatre
+                  key={rec.now_iso + ":" + rec.candidates_considered}
+                  result={rec}
+                  motion={motion}
+                  chosenIso={chosen}
+                />
               </>
             ) : (
-              <p>{err || "Evaluating the cleanest feasible window…"}</p>
+              <p>{err || "Scoring every window that can be optimal…"}</p>
             )}
           </div>
           <p className="fine-print">
@@ -475,7 +598,7 @@ function Composer({ onClose, onSubmit }) {
           )}
           <button
             className="btn primary wide"
-            disabled={busy || !preview}
+            disabled={busy || !rec}
             type="submit"
           >
             {busy ? "Scheduling…" : "Schedule workload"}
@@ -1321,6 +1444,7 @@ export default function App() {
       </div>
       {modal && (
         <Composer
+          motion={motion}
           onClose={closeModal}
           onSubmit={async (f) => {
             await api.createJob(f);

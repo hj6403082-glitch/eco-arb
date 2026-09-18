@@ -73,6 +73,7 @@ export const getState = () =>
     return res.json();
   }, []);
 export const previewJob = post("previewJob", () => "/api/preview");
+export const recommendWindows = post("recommendWindows", () => "/api/recommend");
 export const createJob = post("createJob", () => "/api/jobs");
 export const setSpeed = (speed) =>
   withFallback("setSpeed", () => req("/api/speed", { method: "POST", body: JSON.stringify({ speed }) }), [{ speed }]);
