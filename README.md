@@ -185,14 +185,44 @@ survives a backend restart mid-demo without a reconnect dance.
 
 ## Tests
 
+**Engine unit tests** — nine tests covering fractional-slot energy weighting,
+deferral to a trough, deadline-bound `RUN`, never scheduling past a deadline,
+the sub-threshold no-op, tie-breaking toward the earlier window, and carbon
+beating cost when the two disagree. They run entirely on the offline fallback
+curve, so they never depend on the upstream API.
+
 ```bash
 cd backend && ./.venv/bin/python -m pytest tests -q
 ```
 
-Nine tests over the decision engine: fractional-slot energy weighting, deferral
-to a trough, deadline-bound `RUN`, never scheduling past a deadline, the
-sub-threshold no-op, tie-breaking toward the earlier window, and carbon
-beating cost when the two disagree.
+**End-to-end smoke** — drives the real browser against a running stack and
+asserts sixteen things, from "a deferral actually saves carbon" to "the
+artifact digest verifies from its seed" to "no console errors".
+
+```bash
+./start.sh                  # one terminal
+npm install && npm run smoke   # another
+```
+
+This exists because `vite build` will happily compile a reference to an
+undefined variable: **a build that passes is not a page that runs.** That bug
+occurred during development, the build stayed green, and only the browser
+caught it. `no-undef` is now enabled in the linter for the same reason.
+
+CI runs all three on every push (`.github/workflows/ci.yml`).
+
+---
+
+## Configuration
+
+Every knob has a working default — see `.env.example`. Nothing is secret; the
+Carbon Intensity API needs no key. The two you are most likely to want:
+
+- `ECO_ARB_WORK_SCALE` — how much real CPU a job burns. `1.0` puts a 10 kWh job
+  at roughly six seconds. Turn it down on a slow laptop.
+- `ECO_ARB_SHELL_CMD` — the command the `shell` workload runs. Unset by
+  default on purpose, so an exposed instance cannot be turned into a command
+  runner by posting a job.
 
 ---
 
