@@ -28,7 +28,10 @@ try{
  await page.getByLabel('Workload name',{exact:true}).fill('smoke-ui-job');
  await page.getByRole('button',{name:'Schedule workload',exact:true}).click();
  await page.getByRole('dialog').waitFor({state:'hidden'});
- check(await page.getByRole('button',{name:/smoke-ui-job/}).isVisible(),'Browser submission appears in queue');
+ // Scope to the queue row itself: the cancel control carries an aria-label of
+ // "Cancel <job name>", so a bare name match resolves to two buttons and trips
+ // Playwright's strict mode.
+ check(await page.locator('button.job-select').filter({hasText:'smoke-ui-job'}).isVisible(),'Browser submission appears in queue');
  await page.getByRole('button',{name:'Impact',exact:true}).click();
  check(await page.getByRole('heading',{name:'Make the shift count.'}).isVisible(),'Impact navigation works');
  await page.setViewportSize({width:390,height:844});
