@@ -94,6 +94,7 @@ class GridFeed:
         self._lock = threading.Lock()
         self._profile: Dict[int, float] = synthetic_day_profile()
         self._live = False
+        self._rows = {}
         self._last_fetch_iso: Optional[str] = None
         self._last_error: Optional[str] = None
 
@@ -108,9 +109,11 @@ class GridFeed:
                 "live": self._live,
                 "source": "UK Carbon Intensity API /intensity/fw24h"
                 if self._live
-                else "offline fallback curve",
+                else ("cached UK forecast" if self._last_fetch_iso else "offline fallback curve"),
                 "last_fetch_iso": self._last_fetch_iso,
                 "last_error": self._last_error,
+                "cached": bool(self._last_error and self._last_fetch_iso),
+                "profile_extension": True,
             }
 
     def refresh(self) -> bool:
@@ -126,12 +129,14 @@ class GridFeed:
             payload = resp.json()
             rows = payload.get("data") or []
             profile: Dict[int, float] = {}
+            exact_rows = {}
             for row in rows:
                 intensity = (row.get("intensity") or {}).get("forecast")
                 if intensity is None:
                     continue
                 start = parse_iso(row["from"])
                 profile[half_hour_of_day(start)] = float(intensity)
+                exact_rows[iso(start)] = float(intensity)
             if len(profile) < SLOTS_PER_DAY // 2:
                 raise ValueError(
                     f"forecast covered only {len(profile)} of {SLOTS_PER_DAY} half-hours"
@@ -145,6 +150,7 @@ class GridFeed:
                     profile[hh] = profile[nearest]
             with self._lock:
                 self._profile = profile
+                self._rows = exact_rows
                 self._live = True
                 self._last_fetch_iso = iso(real_now())
                 self._last_error = None
@@ -152,8 +158,7 @@ class GridFeed:
         except Exception as exc:  # noqa: BLE001 - any failure degrades the same way
             with self._lock:
                 self._last_error = f"{type(exc).__name__}: {exc}"
-                if not self._last_fetch_iso:
-                    self._live = False
+                self._live = False
             return False
 
     def intensity_at(self, when: datetime) -> float:
@@ -167,7 +172,7 @@ class GridFeed:
     def forecast(self, start_from: datetime, hours: int = config.DEADLINE_HORIZON_HOURS) -> List[Grid]:
         """Grid slots covering [floor(start_from), +hours), on the virtual clock."""
         first = floor_to_slot(start_from)
-        count = int(hours * 60 / config.SLOT_MINUTES)
+        count = int(hours * 60 / config.SLOT_MINUTES) + 1
         return [
             self._build(first + timedelta(minutes=config.SLOT_MINUTES * k))
             for k in range(count)
@@ -176,7 +181,7 @@ class GridFeed:
     def _build(self, start: datetime) -> Grid:
         with self._lock:
             intensity = self._profile[half_hour_of_day(start)]
-            live = self._live
+            live = self._live and iso(start) in self._rows
         return Grid(
             timestamp=iso(start),
             intensity_gco2_kwh=round(intensity, 1),

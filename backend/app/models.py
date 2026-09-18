@@ -68,11 +68,11 @@ class Decision(BaseModel):
 
 
 class JobCreate(BaseModel):
-    name: str
-    energy_kwh: float = Field(gt=0)
+    name: str = Field(min_length=1, max_length=100, pattern=r".*\S.*")
+    energy_kwh: float = Field(gt=0, le=10000, allow_inf_nan=False)
     deadline_iso: Optional[str] = None
-    deadline_hours: Optional[float] = Field(default=None, gt=0)
-    duration_minutes: float = Field(default=30.0, gt=0)
+    deadline_hours: Optional[float] = Field(default=None, gt=0, le=24, allow_inf_nan=False)
+    duration_minutes: float = Field(default=30.0, gt=0, le=1440, allow_inf_nan=False)
     workload: str = "hash_grind"
 
 

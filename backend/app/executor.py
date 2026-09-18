@@ -133,6 +133,8 @@ def shell(job, progress: ProgressFn) -> dict:
     proc = subprocess.run(
         shlex.split(cmd), capture_output=True, text=True, timeout=600, check=False
     )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Workload exited with code {proc.returncode}: {proc.stderr[-500:]}")
     progress(1.0)
     return {
         "workload": "shell",
@@ -147,8 +149,9 @@ def shell(job, progress: ProgressFn) -> dict:
 WORKLOADS: Dict[str, Callable] = {
     "hash_grind": hash_grind,
     "matrix_train": matrix_train,
-    "shell": shell,
 }
+if os.getenv("ECO_ARB_SHELL_CMD"):
+    WORKLOADS["shell"] = shell
 
 pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="eco-arb-exec")
 

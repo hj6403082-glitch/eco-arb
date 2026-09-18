@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# Boots the scheduler and the terminal together. Ctrl-C stops both.
 set -euo pipefail
 cd "$(dirname "$0")"
-
-cleanup() { kill 0 2>/dev/null || true; }
-trap cleanup EXIT INT TERM
-
-echo "==> backend  http://127.0.0.1:8000"
-./backend/run.sh &
-
-echo "==> frontend http://127.0.0.1:5173"
-(cd frontend && npm install --silent && npm run dev) &
-
-wait
+if [ ! -f .venv/bin/python ]; then
+  python3 -m venv .venv
+  .venv/bin/python -m pip install -r backend/requirements.txt
+fi
+if [ ! -f frontend/dist/index.html ]; then
+  npm ci --prefix frontend
+  npm run build --prefix frontend
+fi
+exec .venv/bin/python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --no-access-log

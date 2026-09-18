@@ -77,6 +77,17 @@ def decide(job: Job, slots: List[Grid], now: datetime) -> Decision:
         if slot_start > now:
             candidates.append(slot_start)
 
+    # Piecewise-constant curves change slope when either end crosses a slot edge.
+    # Include end-aligned windows as well as start-aligned windows.
+    for slot in slots:
+        end_aligned = parse_iso(slot.timestamp) - timedelta(minutes=job.duration_minutes)
+        if end_aligned > now:
+            candidates.append(end_aligned)
+    latest = deadline - timedelta(minutes=job.duration_minutes)
+    if latest >= now:
+        candidates.append(latest)
+    candidates = sorted(set(candidates))
+
     baseline = score_window(slots, now, job.duration_minutes, job.energy_kwh)
     if baseline is None:
         # Forecast does not even cover running immediately; nothing to reason

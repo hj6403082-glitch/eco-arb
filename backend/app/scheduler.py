@@ -38,7 +38,7 @@ def refresh_grid() -> None:
         store.log("Grid feed LIVE: UK Carbon Intensity API /intensity/fw24h", "OK")
     elif not ok and was_live:
         store.log(
-            f"Grid feed degraded to fallback curve ({feed.status()['last_error']})", "WARN"
+            f"Grid feed degraded to cached forecast ({feed.status()['last_error']})", "WARN"
         )
     elif not ok:
         store.log(
@@ -61,7 +61,7 @@ def _on_finished(job_id: str, future) -> None:
             job.finished_iso = iso(clock.now())
             store.log(
                 f"{job.id} DONE '{job.name}' in {result.get('real_seconds', 0):.1f}s real "
-                f"-> {result.get('artifact_path', 'artifact written')}",
+                f"-> execution proof saved",
                 "OK",
             )
         except Exception as exc:  # noqa: BLE001
@@ -70,9 +70,12 @@ def _on_finished(job_id: str, future) -> None:
             job.finished_iso = iso(clock.now())
             store.log(f"{job.id} FAILED '{job.name}': {exc}", "ERR")
 
+    store.checkpoint()
 
 def _dispatch(job: Job, slots) -> None:
     """Start the real workload. Called with store.lock held."""
+    if sum(j.status == "RUNNING" for j in store.jobs.values()) >= 4:
+        return
     vnow = clock.now()
     job.status = "RUNNING"
     job.started_iso = iso(vnow)
@@ -88,7 +91,7 @@ def _dispatch(job: Job, slots) -> None:
         saved = _zero_clean(baseline - actual_carbon)
         store.log(
             f"{job.id} EXECUTE '{job.name}' at {slots[0].intensity_gco2_kwh:.0f} gCO2/kWh "
-            f"-> {actual_carbon:.0f} gCO2 emitted, {saved:.0f} gCO2 avoided vs submit-time baseline",
+            f"-> {actual_carbon:.1f} gCO2 estimated emissions, {saved:.1f} gCO2 avoided vs submit-time baseline",
             "RUN",
         )
     else:
@@ -115,15 +118,20 @@ def tick() -> None:
             deadline = parse_iso(job.deadline_iso)
             if vnow + timedelta(minutes=job.duration_minutes) > deadline:
                 # The last moment we could have started and still finished in
-                # time has passed. Run immediately rather than silently drop it.
+                # time has passed. Record the missed deadline without executing late.
                 store.log(
                     f"{job.id} DEADLINE PRESSURE '{job.name}': starting now to salvage "
-                    f"the {job.deadline_iso} deadline",
+                    f"the {job.deadline_iso} deadline is no longer feasible",
                     "WARN",
                 )
-                _dispatch(job, slots)
+                job.status = "MISSED"
+                store.log(f"{job.id} MISSED: no execution window remains before the deadline", "WARN")
                 continue
 
+            previous = store.decisions.get(job.id)
+            if previous and previous.action == "WAIT" and parse_iso(previous.run_at_iso) <= vnow:
+                _dispatch(job, slots)
+                continue
             decision = decide(job, slots, vnow)
             previous = store.decisions.get(job.id)
 
@@ -160,6 +168,7 @@ def tick() -> None:
             if parse_iso(decision.run_at_iso) <= vnow:
                 _dispatch(job, slots)
 
+    store.checkpoint()
 
 def start() -> None:
     scheduler.add_job(
@@ -167,7 +176,6 @@ def start() -> None:
         "interval",
         seconds=config.GRID_REFRESH_SECONDS,
         id="refresh_grid",
-        next_run_time=None,
         max_instances=1,
         coalesce=True,
     )

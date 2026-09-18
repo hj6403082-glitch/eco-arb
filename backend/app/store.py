@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import threading
+import json
+import os
+from pathlib import Path
 from collections import deque
 from typing import Deque, Dict, List, Optional
 
@@ -24,6 +27,39 @@ class Store:
         self.actual_cost: Dict[str, float] = {}
         self.logs: Deque[LogLine] = deque(maxlen=config.LOG_RING_SIZE)
         self._seq = 0
+        self.path = Path(os.getenv("ECO_ARB_STATE", Path(__file__).resolve().parents[1] / "data" / "state.json"))
+        self._load()
+
+    def _load(self):
+        if not self.path.exists():
+            return
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            self.jobs = {k: Job(**v) for k, v in data.get("jobs", {}).items()}
+            self.decisions = {k: Decision(**v) for k, v in data.get("decisions", {}).items()}
+            for key in ("baselines", "baseline_costs", "actual_carbon", "actual_cost"):
+                setattr(self, key, data.get(key, {}))
+            self._seq = data.get("seq", 0)
+            self.logs.extend(LogLine(**v) for v in data.get("logs", []))
+            for job in self.jobs.values():
+                if job.status == "RUNNING":
+                    job.status = "FAILED"
+                    job.result = {"error": "Execution interrupted by server restart; submit a new workload to retry."}
+        except (ValueError, TypeError, OSError) as exc:
+            raise RuntimeError(f"Cannot restore saved state at {self.path}: {exc}") from exc
+
+    def checkpoint(self):
+        with self.lock:
+            data = {"seq": self._seq,
+                    "jobs": {k: v.model_dump() for k, v in self.jobs.items()},
+                    "decisions": {k: v.model_dump() for k, v in self.decisions.items()},
+                    "logs": [v.model_dump() for v in self.logs]}
+            for key in ("baselines", "baseline_costs", "actual_carbon", "actual_cost"):
+                data[key] = getattr(self, key)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(data), encoding="utf-8")
+            temporary.replace(self.path)
 
     def next_id(self) -> str:
         with self.lock:
@@ -66,6 +102,8 @@ class Store:
             energy = 0.0
             done = 0
             for job_id, actual in self.actual_carbon.items():
+                if job_id not in self.jobs or self.jobs[job_id].status != "DONE":
+                    continue
                 baseline = self.baselines.get(job_id, actual)
                 saved_g += baseline - actual
                 emitted_g += actual

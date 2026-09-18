@@ -40,13 +40,18 @@ app.add_middleware(
 
 def _resolve_deadline(payload: JobCreate, now) -> str:
     if payload.deadline_iso:
-        deadline = parse_iso(payload.deadline_iso)
+        try:
+            deadline = parse_iso(payload.deadline_iso)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(422, "Use a valid ISO deadline") from exc
     else:
         hours = payload.deadline_hours or config.DEADLINE_HORIZON_HOURS
         deadline = now + timedelta(hours=min(hours, config.DEADLINE_HORIZON_HOURS))
     horizon_cap = now + timedelta(hours=config.DEADLINE_HORIZON_HOURS)
     if deadline > horizon_cap:
         deadline = horizon_cap
+    if deadline < now + timedelta(minutes=payload.duration_minutes, seconds=config.TICK_SECONDS * clock.speed + 1):
+        raise HTTPException(422, "The deadline must allow the full workload duration plus one scheduler tick")
     return iso(deadline)
 
 
@@ -65,6 +70,15 @@ def state() -> dict:
         decisions = {k: v.model_dump() for k, v in store.decisions.items()}
         logs = [l.model_dump() for l in store.logs]
         totals = store.totals()
+        impacts = {}
+        for jid, j in store.jobs.items():
+            if j.status == "DONE" and jid in store.actual_carbon:
+                baseline = store.baselines.get(jid, 0)
+                actual = store.actual_carbon[jid]
+                impacts[jid] = {"baseline_carbon_g": baseline, "estimated_carbon_g": round(actual, 3),
+                               "saved_carbon_g": round(baseline - actual, 3),
+                               "saved_pct": round((baseline - actual) / baseline * 100, 2) if baseline else 0,
+                               "energy_basis": "operator estimate; not metered"}
     return {
         "clock": {
             "virtual_iso": iso(vnow),
@@ -78,7 +92,7 @@ def state() -> dict:
             "forecast": [s.model_dump() for s in slots],
             "status": feed.status(),
             "provenance": {
-                "intensity_gco2_kwh": "live",
+                "intensity_gco2_kwh": "forecast replay" if clock.speed > 1 else ("live forecast with profile extension" if feed.live else ("cached forecast" if feed.status()["cached"] else "synthetic fallback")),
                 "renewable_pct": "derived from intensity",
                 "price": "modelled (API carries no price)",
             },
@@ -86,6 +100,7 @@ def state() -> dict:
         "jobs": jobs,
         "decisions": decisions,
         "totals": totals,
+        "impacts": impacts,
         "logs": logs,
         "workloads": sorted(WORKLOADS),
         "horizon_hours": config.DEADLINE_HORIZON_HOURS,
@@ -107,19 +122,22 @@ def create_job(payload: JobCreate) -> dict:
         workload=payload.workload,
         submitted_iso=iso(vnow),
     )
-    store.add(job)
-    store.log(
-        f"{job.id} SUBMIT '{job.name}' {job.energy_kwh:g} kWh / "
-        f"{job.duration_minutes:g} min, deadline {job.deadline_iso}",
-        "INFO",
-    )
-    # Decide immediately so the terminal never shows an unexplained QUEUED row.
-    decision = decide(job, feed.forecast(vnow), vnow)
-    store.set_decision(decision)
     with store.lock:
-        store.baselines.setdefault(job.id, decision.baseline_carbon_g)
-        store.baseline_costs.setdefault(job.id, decision.baseline_cost_gbp)
-    return {"job": job.model_dump(), "decision": decision.model_dump()}
+        store.add(job)
+        store.log(
+            f"{job.id} SUBMIT '{job.name}' {job.energy_kwh:g} kWh / "
+            f"{job.duration_minutes:g} min, deadline {job.deadline_iso}",
+            "INFO",
+        )
+        # Decide immediately so the terminal never shows an unexplained QUEUED row.
+        decision = decide(job, feed.forecast(vnow), vnow)
+        store.set_decision(decision)
+        with store.lock:
+            store.baselines.setdefault(job.id, decision.baseline_carbon_g)
+            store.baseline_costs.setdefault(job.id, decision.baseline_cost_gbp)
+            store.checkpoint()
+        return {"job": job.model_dump(), "decision": decision.model_dump()}
+
 
 
 @app.get("/api/jobs/{job_id}")
@@ -136,16 +154,19 @@ def get_job(job_id: str) -> dict:
 
 @app.delete("/api/jobs/{job_id}")
 def cancel_job(job_id: str) -> dict:
-    job = store.get(job_id)
-    if job is None:
-        raise HTTPException(404, "no such job")
-    if job.status == "RUNNING":
-        raise HTTPException(409, "job is already executing; it runs at real speed")
     with store.lock:
-        store.jobs.pop(job_id, None)
-        store.decisions.pop(job_id, None)
-    store.log(f"{job_id} CANCELLED '{job.name}'", "WARN")
-    return {"cancelled": job_id}
+        job = store.get(job_id)
+        if job is None:
+            raise HTTPException(404, "no such job")
+        if job.status not in ("QUEUED", "WAITING"):
+            raise HTTPException(409, "Only pending jobs can be cancelled; execution records are retained")
+        with store.lock:
+            store.jobs.pop(job_id, None)
+            store.decisions.pop(job_id, None)
+        store.log(f"{job_id} CANCELLED '{job.name}'", "WARN")
+        store.checkpoint()
+        return {"cancelled": job_id}
+
 
 
 @app.get("/api/jobs/{job_id}/artifact")
@@ -187,21 +208,21 @@ def seed_demo() -> dict:
     vnow = clock.now()
     specs = [
         JobCreate(
-            name="nightly-model-retrain",
+            name="climate-model-validation",
             energy_kwh=48.0,
             duration_minutes=120.0,
             deadline_hours=24,
             workload="hash_grind",
         ),
         JobCreate(
-            name="batch-video-transcode",
+            name="renewable-scenario-matrix",
             energy_kwh=12.0,
             duration_minutes=60.0,
             deadline_hours=12,
             workload="matrix_train",
         ),
         JobCreate(
-            name="hourly-etl-rollup",
+            name="grid-data-integrity-check",
             energy_kwh=4.0,
             duration_minutes=30.0,
             deadline_hours=0.75,
@@ -214,6 +235,8 @@ def seed_demo() -> dict:
 @app.post("/api/reset")
 def reset() -> dict:
     with store.lock:
+        if any(j.status == "RUNNING" for j in store.jobs.values()):
+            raise HTTPException(409, "Wait for running workloads to finish before resetting")
         store.jobs.clear()
         store.decisions.clear()
         store.baselines.clear()
@@ -223,4 +246,22 @@ def reset() -> dict:
         store.logs.clear()
     clock.reset()
     store.log("State cleared.", "INFO")
+    store.checkpoint()
     return {"ok": True}
+
+
+@app.post("/api/preview")
+def preview(payload: JobCreate) -> dict:
+    if payload.workload not in WORKLOADS:
+        raise HTTPException(400, "Unknown workload")
+    now = clock.now()
+    job = Job(id="preview", name=payload.name, energy_kwh=payload.energy_kwh,
+              duration_minutes=payload.duration_minutes, deadline_iso=_resolve_deadline(payload, now))
+    return decide(job, feed.forecast(now), now).model_dump()
+
+
+# Production build and API share one origin; Vite remains available for development.
+from fastapi.staticfiles import StaticFiles
+frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
