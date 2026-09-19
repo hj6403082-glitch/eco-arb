@@ -22,16 +22,22 @@ const page=await browser.newPage({viewport:{width:1440,height:1000}});
 const errors=[];page.on('pageerror',e=>errors.push(e.message));
 try{
  await page.goto(UI);
- await page.getByRole('heading',{name:'A cleaner time to compute.'}).waitFor();
+ await page.getByRole('heading',{name:'Your climate control room.'}).waitFor();
+ await page.getByRole('button',{name:'Grid',exact:true}).click();
  check(await page.locator('svg[aria-label="Carbon intensity forecast with optimal execution window"]').isVisible(),'Forecast renders');
+ await page.getByRole('button',{name:'Overview',exact:true}).click();
  await page.getByRole('button',{name:'New workload',exact:true}).click();
  await page.getByLabel('Workload name',{exact:true}).fill('smoke-ui-job');
  await page.getByRole('button',{name:'Schedule workload',exact:true}).click();
  await page.getByRole('dialog').waitFor({state:'hidden'});
- // Scope to the queue row itself: the cancel control carries an aria-label of
- // "Cancel <job name>", so a bare name match resolves to two buttons and trips
- // Playwright's strict mode.
  check(await page.locator('button.job-select').filter({hasText:'smoke-ui-job'}).isVisible(),'Browser submission appears in queue');
+ await page.locator('button.job-select').filter({hasText:'smoke-ui-job'}).click();
+ check(await page.getByRole('dialog').isVisible(),'Workload details open');
+ await page.keyboard.press('Escape');
+ await page.getByRole('button',{name:'Regions',exact:true}).click();
+ check(await page.getByRole('heading',{name:'Explore the regional decision.'}).isVisible(),'Regions navigation works');
+ await page.getByRole('button',{name:'Intelligence',exact:true}).click();
+ check(await page.getByRole('heading',{name:'See what the model learns.'}).isVisible(),'Intelligence navigation works');
  await page.getByRole('button',{name:'Impact',exact:true}).click();
  check(await page.getByRole('heading',{name:'Make the shift count.'}).isVisible(),'Impact navigation works');
  await page.setViewportSize({width:390,height:844});

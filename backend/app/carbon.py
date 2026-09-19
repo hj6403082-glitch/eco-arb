@@ -180,14 +180,17 @@ class GridFeed:
 
     def _build(self, start: datetime) -> Grid:
         with self._lock:
-            intensity = self._profile[half_hour_of_day(start)]
-            live = self._live and iso(start) in self._rows
+            exact = iso(start) in self._rows
+            intensity = self._rows[iso(start)] if exact else self._profile[half_hour_of_day(start)]
+            live = self._live and exact
+            source = "provider_forecast" if live else ("cached" if exact else ("profile_replay" if self._last_fetch_iso else "synthetic_fallback"))
         return Grid(
             timestamp=iso(start),
             intensity_gco2_kwh=round(intensity, 1),
             renewable_pct=derive_renewable_pct(intensity),
             price=model_price(intensity, start),
             live=live,
+            source_kind=source,
         )
 
 

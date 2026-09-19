@@ -74,11 +74,21 @@ def hash_grind(job, progress: ProgressFn) -> dict:
 
 
 def verify_hash_grind(result: dict) -> bool:
-    """Independently recompute a hash_grind result from its recorded seed."""
+    """Recompute both the chain digest and the sampled Merkle root."""
+    if not isinstance(result.get("rounds"), int) or not 1 <= result["rounds"] <= 30_000_000:
+        return False
     digest = hashlib.sha256(result["seed"].encode()).digest()
-    for _ in range(result["rounds"]):
+    leaves = []
+    for i in range(result["rounds"]):
         digest = hashlib.sha256(digest).digest()
-    return digest.hex() == result["final_digest"]
+        if i % 4096 == 0:
+            leaves.append(digest)
+    level = leaves or [digest]
+    while len(level) > 1:
+        level = [hashlib.sha256(level[i] + level[min(i+1, len(level)-1)]).digest()
+                 for i in range(0, len(level), 2)]
+    return (digest.hex() == result["final_digest"] and level[0].hex() == result.get("merkle_root")
+            and len(leaves) == result.get("leaves_sampled"))
 
 
 def matrix_train(job, progress: ProgressFn) -> dict:
@@ -163,6 +173,9 @@ def run_job(job, progress: ProgressFn) -> dict:
             f"unknown workload {job.workload!r}; expected one of {sorted(WORKLOADS)}"
         )
     result = fn(job, progress)
+    result["execution_location"] = "local host; not the recommended grid region"
+    result["recommended_region"] = job.target_region
+    result["energy_basis"] = "operator estimate; no electricity meter connected"
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     artifact = ARTIFACT_DIR / f"{job.id}.json"
     payload = {
@@ -172,6 +185,12 @@ def run_job(job, progress: ProgressFn) -> dict:
         "deadline_iso": job.deadline_iso,
         "run_at_iso": job.run_at_iso,
         "result": result,
+        "execution_plan": job.execution_plan,
+        "baseline_plan": job.baseline_plan,
+        "data_mode": job.data_mode,
+        "home_region": job.home_region,
+        "recommended_region": job.target_region,
+        "receipt_scope": "Computational result only. Regional carbon is a counterfactual estimate, not measured avoidance.",
     }
     artifact.write_text(json.dumps(payload, indent=2))
     result["artifact_path"] = str(artifact)

@@ -247,9 +247,12 @@ export function createOfflineBackend() {
   };
   const buildSlot = (t) => {
     const intensity = profile[halfHourOfDay(t)];
+    const isLive = live && Boolean(liveRows[iso(t)]);
     return { t, timestamp: iso(t), intensity_gco2_kwh: round(intensity, 1), intensity,
              renewable_pct: deriveRenewablePct(intensity), price: modelPrice(intensity, t),
-             live: live && Boolean(liveRows[iso(t)]) };
+             live: isLive,
+             source_kind: isLive ? "provider_forecast" : "synthetic_fallback",
+             renewable_basis: "derived proxy" };
   };
   let liveRows = {};
   const forecast = (fromMs) => {
@@ -258,7 +261,8 @@ export function createOfflineBackend() {
     return Array.from({ length: count }, (_, k) => buildSlot(first + k * SLOT_MS));
   };
   const wire = (s) => ({ timestamp: s.timestamp, intensity_gco2_kwh: s.intensity_gco2_kwh,
-                         renewable_pct: s.renewable_pct, price: s.price, live: s.live });
+                         renewable_pct: s.renewable_pct, price: s.price, live: s.live,
+                         source_kind: s.source_kind, renewable_basis: s.renewable_basis });
 
   async function refresh() {
     try {
@@ -384,6 +388,9 @@ export function createOfflineBackend() {
       energy_kwh: body.energy_kwh, duration_minutes: body.duration_minutes ?? 30,
       workload: body.workload ?? "hash_grind", status: "QUEUED",
       deadline_iso: body.deadline_iso ?? iso(now + hours * 3600000),
+      home_region: body.home_region ?? "gb", target_region: body.home_region ?? "gb",
+      allowed_regions: body.allowed_regions ?? [], allow_shift: false,
+      forecast_method: "provider", data_mode: "live", pinned: false, baseline_plan: null,
       submitted_iso: iso(now), run_at_iso: null, started_iso: null,
       finished_iso: null, result: null, progress: 0 };
   };
@@ -422,6 +429,25 @@ export function createOfflineBackend() {
         decisions: Object.fromEntries(decisions),
         totals: totals(), impacts, logs: [...logs],
         workloads: ["hash_grind", "matrix_train"], horizon_hours: HORIZON_HOURS,
+        // Only GB national is available without a server: the regional and
+        // Indian feeds need provider calls this page cannot make, and the model
+        // needs training data it cannot fetch. Both say so rather than faking it.
+        regions: [
+          { id: "gb", name: "Great Britain", country: "GB", available: true,
+            current: wire(buildSlot(floorToSlot(now))),
+            source: live ? "UK Carbon Intensity API (fetched in-browser)" : "offline fallback curve",
+            error: null, execution: "local demonstration only" },
+          ...[["gb-london", "London", "GB"], ["gb-scotland", "North Scotland", "GB"],
+              ["in-north", "India \u00b7 Northern grid", "IN"], ["in-south", "India \u00b7 Southern grid", "IN"]]
+            .map(([id, name, country]) => ({
+              id, name, country, available: false, current: null,
+              source: "Needs the local backend; run start.ps1 for regional feeds",
+              error: null, execution: "local demonstration only" })),
+        ],
+        model: { trained: false, algorithm: "seasonal ridge regression",
+                 note: "Training needs the local backend; run start.ps1" },
+        data_mode: "live",
+        execution_mode: "browser demonstration; no remote cloud worker",
       };
     },
     async recommendWindows(body) {

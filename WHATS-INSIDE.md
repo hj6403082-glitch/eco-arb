@@ -9,8 +9,10 @@
 - `backend/app/scheduler.py`: automatic dispatch and lifecycle.
 - `backend/app/executor.py`: real bounded CPU workloads and verifiable output.
 - `backend/app/store.py`: atomic local persistence and completed-job accounting.
-- `backend/tests`: 29 regression tests.
-- `start.ps1`, `start.sh`: single-server launchers.
+- `backend/tests`: 42 regression and intelligence tests.
+- `start.cmd`, `start.ps1`, `start.sh`: single-server launchers; `start.cmd` avoids PowerShell execution-policy issues.
+- `backend/app/regions.py`: labelled UK/India feeds, imports and synthetic scenario.
+- `backend/app/learning.py`: chronological seasonal regression and validation report.
 - `README.md`: setup, demo, architecture and honest limitations.
 - `VERIFICATION.md`: checks performed.
 

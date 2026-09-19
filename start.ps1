@@ -1,6 +1,7 @@
 param([string]$Python = '', [switch]$Rebuild, [int]$Port = 8000)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
+$env:ECO_ARB_DEMO_MODE = 'scenario'
 if (-not (Test-Path '.venv/Scripts/python.exe')) {
     if (-not $Python) {
         $bundled = Join-Path $env:USERPROFILE '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'

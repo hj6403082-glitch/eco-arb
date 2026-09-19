@@ -98,6 +98,9 @@ def test_real_hash_work_can_be_independently_verified(monkeypatch):
     j=Job(id='proof',name='proof',energy_kwh=1,deadline_iso=iso(clock.now()+timedelta(hours=1)))
     result=hash_grind(j,lambda _:None)
     assert verify_hash_grind(result)
+    root=result['merkle_root'];result['merkle_root']='bad'
+    assert not verify_hash_grind(result)
+    result['merkle_root']=root
     result['final_digest']='bad';assert not verify_hash_grind(result)
 
 def test_feed_failure_clears_live_label(monkeypatch):

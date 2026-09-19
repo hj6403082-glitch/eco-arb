@@ -10,13 +10,15 @@ Requires Python 3.10+ for Windows. This release includes the built React fronten
 ./start.ps1
 ```
 
+If PowerShell blocks scripts on Windows, double-click `start.cmd` instead. It launches the same app without changing execution policy. Open http://127.0.0.1:8000 after the console says “Application startup complete.”
+
 Open http://127.0.0.1:8000. First launch creates a virtual environment and installs backend dependencies. If necessary, pass `-Python 'C:/path/to/python.exe'`. Use `-Port 8001` if 8000 is occupied. Use `-Rebuild` after editing the frontend; rebuilding requires Node.js 22.12+ and npm. On macOS/Linux, use `bash start.sh` with Python 3.10+.
 
 API documentation: http://127.0.0.1:8000/docs.
 
 ## Three-minute demo
 
-1. Open **Overview**, click **Load demo**. Three bounded workloads receive decisions from the current forecast. A labelled fallback keeps the demo usable offline.
+1. Open **Simulation → Start guided scenario** on a fresh session. It creates labelled RUN / WAIT / SHIFT decisions using a repeatable synthetic regional scenario; every workload executes locally.
 2. Select the flexible climate-validation job. Explain its suggested start, estimated reduction, deadline and feasible-window count. Expand **Why this decision?**
 3. Click **New workload**. Change energy, planning duration and deadline. The preview updates without creating a job. Submit to enter the real scheduler.
 4. Choose **360x** in Grid & simulation. This accelerates the forecast timeline, not CPU execution. One virtual hour takes ten real seconds; a full day takes four minutes. The header changes to **Forecast replay**.
@@ -26,6 +28,8 @@ API documentation: http://127.0.0.1:8000/docs.
 Deferral and savings depend on the forecast. Zero savings are a valid outcome. The scheduler does not invent savings for the presentation.
 
 ## What is real and what is estimated?
+
+The self-contained scenario does not claim Indian live telemetry or remote cloud execution. India is unavailable in operational mode until a provider forecast is connected or an operator imports future half-hour rows. Regional SHIFT is a recommendation demonstrated with local CPU work. Every receipt preserves its data mode, baseline forecast, dispatch forecast, energy basis and computational proof.
 
 - **Real:** public UK Carbon Intensity API requests, queue, deadline checks, scheduling, bounded CPU work, progress, artifacts and hash verification.
 - **Forecast:** public half-hour carbon intensity. Missing intervals and times beyond the fetched horizon use a daily profile extension. Accelerated time explicitly replays this profile.

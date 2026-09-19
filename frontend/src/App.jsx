@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import * as api from "./lib/api";
 import { EnergyField, EnergyStage } from "./components/EnergyScene";
+import { Intelligence, Regions } from "./components/Intelligence";
 
 const fmt = (n, d = 0) =>
   (Math.abs(Number(n ?? 0)) < 0.5 * 10 ** -d
@@ -52,6 +53,53 @@ function Icon({ name, size = 18 }) {
     >
       <path d={paths[name] || paths.bolt} />
     </svg>
+  );
+}
+const PAGES = {
+  Overview: "overview",
+  Grid: "grid",
+  Workloads: "workloads",
+  Impact: "impact",
+  Activity: "activity",
+  Simulation: "simulation",
+  Regions: "regions",
+  Intelligence: "intelligence",
+};
+const readPage = () =>
+  Object.keys(PAGES).find(
+    (name) => "#/" + PAGES[name] === window.location.hash,
+  ) || "Overview";
+function DetailDialog({ onClose, children }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    ref.current.showModal();
+  }, []);
+  return (
+    <dialog
+      ref={ref}
+      className="detail-dialog"
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      aria-label="Workload decision"
+    >
+      <div className="detail-heading">
+        <span className="eyebrow">WORKLOAD INTELLIGENCE</span>
+        <button
+          autoFocus
+          className="icon-btn"
+          aria-label="Close workload details"
+          onClick={onClose}
+        >
+          <Icon name="close" />
+        </button>
+      </div>
+      {children}
+    </dialog>
   );
 }
 function Badge({ children, tone = "" }) {
@@ -273,7 +321,6 @@ function Forecast({ slots, decision, horizon, setHorizon }) {
     </Panel>
   );
 }
-
 /* The engine already enumerates every window that can be optimal and throws the
  * losers away. DecisionTheatre replays that real search: each candidate the
  * engine scored, in time order, with the running best. Nothing here is staged --
@@ -366,16 +413,22 @@ function DecisionTheatre({ result, chosenIso, motion }) {
     </div>
   );
 }
-function Composer({ onClose, onSubmit, motion }) {
+function Composer({ onClose, onSubmit, regions = [], model, motion }) {
+  // Open on a region that actually has a forecast: only GB is available in
+  // operational mode, and the Indian grids only once scenario mode is started.
+  const firstAvailable =
+    regions.find((r) => r.available)?.id ?? "gb";
   const [form, setForm] = useState({
     name: "nightly-climate-model",
     energy_kwh: 12,
     duration_minutes: 60,
     deadline_hours: 12,
     workload: "hash_grind",
+    home_region: firstAvailable, allowed_regions: [], allow_shift: false, forecast_method: "provider",
   });
+  const [preview, setPreview] = useState(null);
   const [rec, setRec] = useState(null);
-  const [chosen, setChosen] = useState(null); // null = let the engine choose
+  const [chosen, setChosen] = useState(null); // null = accept the engine's own plan
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const ref = useRef(null);
@@ -406,11 +459,11 @@ function Composer({ onClose, onSubmit, motion }) {
     const id = setTimeout(
       () =>
         api
-          .recommendWindows(form)
+          .previewJob(form)
           .then((d) => {
             if (live) {
-              setRec(d);
-              setChosen(null);
+              setPreview(d);
+              api.recommendWindows(form).then((r) => { if (live) setRec(r); }).catch(() => {});
               setErr("");
             }
           })
@@ -424,11 +477,14 @@ function Composer({ onClose, onSubmit, motion }) {
       clearTimeout(id);
     };
   }, [form]);
-  const field = (k, v) => {
+  const updateForm = (patch) => {
+    setPreview(null);
     setRec(null);
     setChosen(null);
-    setForm((f) => ({ ...f, [k]: v }));
+    setErr("");
+    setForm((f) => ({ ...f, ...patch }));
   };
+  const field = (k, v) => updateForm({[k]: v});
   return (
     <div
       className="modal-backdrop"
@@ -494,6 +550,13 @@ function Composer({ onClose, onSubmit, motion }) {
                 ))}
             </select>
           </label>
+          <details className="strategy-options"><summary>Region & forecast strategy</summary>
+            <label>Home region<select aria-label="Home region" value={form.home_region} onChange={e=>updateForm({home_region:e.target.value,forecast_method:'provider'})}>{regions.map(r=><option key={r.id} value={r.id} disabled={!r.available}>{r.name}{!r.available?' — unavailable':''}</option>)}</select></label>
+            <label>Forecast method<select value={form.forecast_method} onChange={e=>field('forecast_method',e.target.value)}><option value="provider">Available forecast / scenario</option><option value="learned" disabled={!model?.trained||form.home_region!=='gb'||form.allow_shift}>Trained GB model</option></select></label>
+            <label><input type="checkbox" checked={form.allow_shift} onChange={e=>updateForm({allow_shift:e.target.checked,forecast_method:'provider'})}/> Allow regional SHIFT recommendations</label>
+            {form.allow_shift&&regions.filter(r=>r.id!==form.home_region&&r.available).map(r=><label key={r.id}><input type="checkbox" checked={form.allowed_regions.includes(r.id)} onChange={e=>field('allowed_regions',e.target.checked?[...form.allowed_regions,r.id]:form.allowed_regions.filter(id=>id!==r.id))}/>{r.name}</label>)}
+            <p className="fine-print">Every job executes locally. Regional emissions are counterfactual estimates using your declared energy.</p>
+          </details>
           <div className="form-grid">
             <label>
               Estimated energy · kWh
@@ -535,57 +598,81 @@ function Composer({ onClose, onSubmit, motion }) {
               <span>Flexible · 24h</span>
             </span>
           </label>
-          <div className="rec-box">
-            <span className="eyebrow">RECOMMENDED EXECUTION WINDOWS</span>
-            {rec ? (
+          <div className="preview-box">
+            <span className="eyebrow">LIVE SCHEDULING PREVIEW</span>
+            {preview ? (
               <>
-                <ul className="rec-list">
-                  {rec.options.map((o) => {
-                    const isNow = o.breakpoint === "now";
-                    const active =
-                      chosen === o.start_iso ||
-                      (chosen === null && o.recommended);
-                    return (
-                      <li key={o.start_iso}>
-                        <button
-                          type="button"
-                          className={"rec-option" + (active ? " active" : "")}
-                          aria-pressed={active}
-                          onClick={() => setChosen(o.start_iso)}
-                        >
-                          <span className="rec-when">
-                            <b>{isNow ? "Run now" : time(o.start_iso) + " UTC"}</b>
-                            <small>{o.label}</small>
-                          </span>
-                          <span className="rec-num rec-carbon">
-                            <b>{isNow ? "—" : "−" + fmt(o.carbon_saved_pct, 1) + "%"}</b>
-                            <small>CO₂</small>
-                          </span>
-                          <span className="rec-num">
-                            <b>{isNow ? "—" : "−" + fmt(o.cost_saved_pct, 0) + "%"}</b>
-                            <small>cost</small>
-                          </span>
-                          <span className="rec-num">
-                            <b>{isNow ? "now" : "+" + fmt(o.delay_hours, 1) + "h"}</b>
-                            <small>delay</small>
-                          </span>
-                          {o.recommended && <span className="rec-star">★</span>}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-                <DecisionTheatre
-                  key={rec.now_iso + ":" + rec.candidates_considered}
-                  result={rec}
-                  motion={motion}
-                  chosenIso={chosen}
-                />
+                <div>
+                  <Badge tone="green">
+                    {preview.action === "WAIT"
+                      ? "DEFER TO " + time(preview.run_at_iso) + " UTC"
+                      : preview.action === "SHIFT" ? "SHIFT TO " + preview.target_region + " · " + time(preview.run_at_iso) : "RUN NOW"}
+                  </Badge>
+                  <strong>
+                    {fmt(preview.carbon_saved_pct, 1)}% <small>less CO₂</small>
+                  </strong>
+                </div>
+                <p>
+                  {preview.feasible_windows} feasible windows evaluated.{" "}
+                  {fmt(preview.baseline_carbon_g / 1000, 2)} →{" "}
+                  {fmt(preview.optimal_carbon_g / 1000, 2)} kg estimated CO₂.
+                </p>
               </>
             ) : (
-              <p>{err || "Scoring every window that can be optimal…"}</p>
+              <p>{err || "Evaluating the cleanest feasible window…"}</p>
             )}
           </div>
+          {rec && (
+            <div className="rec-box">
+              <span className="eyebrow">OR PICK A WINDOW YOURSELF</span>
+              {rec.options.length === 0 && (
+                <p className="rec-hint">
+                  No feasible window in this region for that deadline.
+                </p>
+              )}
+              <ul className="rec-list">
+                {rec.options.map((o) => {
+                  const isNow = o.breakpoint === "now";
+                  return (
+                    <li key={o.start_iso}>
+                      <button
+                        type="button"
+                        className={"rec-option" + (chosen === o.start_iso ? " active" : "")}
+                        aria-pressed={chosen === o.start_iso}
+                        onClick={() =>
+                          setChosen((c) => (c === o.start_iso ? null : o.start_iso))
+                        }
+                      >
+                        <span className="rec-when">
+                          <b>{isNow ? "Run now" : time(o.start_iso) + " UTC"}</b>
+                          <small>{o.label}</small>
+                        </span>
+                        <span className="rec-num rec-carbon">
+                          <b>{isNow ? "—" : "−" + fmt(o.carbon_saved_pct, 1) + "%"}</b>
+                          <small>CO\u2082</small>
+                        </span>
+                        <span className="rec-num">
+                          <b>{isNow ? "now" : "+" + fmt(o.delay_hours, 1) + "h"}</b>
+                          <small>delay</small>
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="rec-hint">
+                {chosen
+                  ? "This window is pinned; the scheduler will not re-optimise it."
+                  : "Leave unselected to accept the plan above."}
+              </p>
+              <DecisionTheatre
+                key={rec.now_iso + ":" + rec.candidates_considered}
+                result={rec}
+                motion={motion}
+                chosenIso={chosen}
+              />
+            </div>
+          )}
           <p className="fine-print">
             Energy and duration are planning inputs. The bounded CPU demo runs
             in seconds; carbon and cost are scenario estimates, not metered
@@ -598,7 +685,7 @@ function Composer({ onClose, onSubmit, motion }) {
           )}
           <button
             className="btn primary wide"
-            disabled={busy || !rec}
+            disabled={busy || !preview}
             type="submit"
           >
             {busy ? "Scheduling…" : "Schedule workload"}
@@ -617,7 +704,7 @@ export default function App() {
     [error, setError] = useState(""),
     [connectionError, setConnectionError] = useState(""),
     [selected, setSelected] = useState(null),
-    [tab, setTab] = useState("Overview"),
+    [tab, setTabState] = useState(readPage),
     [horizon, setHorizon] = useState(24),
     [modal, setModal] = useState(false),
     [busy, setBusy] = useState(false),
@@ -672,6 +759,22 @@ export default function App() {
       setBusy(false);
     }
   };
+  const [inspecting, setInspecting] = useState(false);
+  const setTab = useCallback((name) => {
+    window.location.hash = "/" + PAGES[name];
+    setTabState(name);
+    setInspecting(false);
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, []);
+  useEffect(() => {
+    const sync = () => {
+      setTabState(readPage());
+      setInspecting(false);
+      window.scrollTo({ top: 0, behavior: "instant" });
+    };
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
   const closeModal = useCallback(() => setModal(false), []);
   if (!state)
     return (
@@ -713,7 +816,7 @@ export default function App() {
       (filter === "All workloads" || j.status === filter) &&
       j.name.toLowerCase().includes(search.toLowerCase()),
   );
-  const mode = state.clock.compressed
+  const mode = state.data_mode === "scenario" ? "Synthetic scenario" : state.clock.compressed
     ? "Forecast replay"
     : state.grid.status.live
       ? "Live forecast"
@@ -752,13 +855,19 @@ export default function App() {
         <nav>
           {[
             ["Overview", "grid"],
+            ["Grid", "chart"],
+            ["Regions", "grid"],
+            ["Intelligence", "bolt"],
             ["Workloads", "layers"],
             ["Impact", "leaf"],
             ["Activity", "activity"],
+            ["Simulation", "clock"],
           ].map(([name, icon]) => (
             <button
               key={name}
               className={tab === name ? "nav-item active" : "nav-item"}
+              aria-current={tab === name ? "page" : undefined}
+              title={name}
               onClick={() => setTab(name)}
             >
               <Icon name={icon} />
@@ -790,7 +899,7 @@ export default function App() {
               {connectionError
                 ? "Connection interrupted"
                 : "Scheduler connected"}
-              <small>UK national grid · UTC</small>
+              <small>Local compute · UTC</small>
             </span>
             <Icon name="info" size={15} />
           </div>
@@ -837,39 +946,57 @@ export default function App() {
                 <span className="tiny-line" /> AUTONOMOUS CARBON ARBITRAGE
               </div>
               <h1>
-                {tab === "Overview"
-                  ? "A cleaner time to compute."
-                  : tab === "Workloads"
-                    ? "Every workload. A better window."
-                    : tab === "Impact"
-                      ? "Make the shift count."
-                      : "Every decision, in the open."}
+                {
+                  {
+                    Overview: "Your climate control room.",
+                    Grid: "Follow the clean energy.",
+                    Workloads: "Give your compute a cleaner window.",
+                    Impact: "Make the shift count.",
+                    Activity: "Every decision, in the open.",
+                    Simulation: "Bring the demo to life.",
+                    Regions: "Explore the regional decision.",
+                    Intelligence: "See what the model learns.",
+                  }[tab]
+                }
               </h1>
               <p>
-                {tab === "Overview"
-                  ? "Turn workload flexibility into lower emissions. Your grid-aware control room."
-                  : tab === "Workloads"
-                    ? "Schedule, track and verify real computational work."
-                    : tab === "Impact"
-                      ? "Trace estimated savings back to completed workloads."
-                      : "Follow the scheduler from forecast to execution."}
+                {
+                  {
+                    Overview: "A little flexibility. A lighter footprint.",
+                    Grid: "Explore carbon forecasts before you schedule.",
+                    Regions: "Compare forecast sources and their availability.",
+                    Intelligence: "Train, evaluate, and inspect a seasonal forecast.",
+                    Workloads:
+                      "Manage your queue. Select a job to inspect its decision.",
+                    Impact:
+                      "Trace estimated savings back to completed workloads.",
+                    Activity:
+                      "A complete timeline of scheduling and execution.",
+                    Simulation:
+                      "Control the demo clock and refresh your grid source.",
+                  }[tab]
+                }
               </p>
             </div>
             <div className="heading-actions">
-              <button
-                className="btn"
-                disabled={busy}
-                onClick={() =>
-                  act(api.seedDemo, "Three demo workloads scheduled")
-                }
-              >
-                <Icon name="bolt" size={16} />
-                Load demo
-              </button>
-              <button className="btn primary" onClick={() => setModal(true)}>
-                <Icon name="plus" size={17} />
-                New workload
-              </button>
+              {tab === "Simulation" && (
+                <button
+                  className="btn"
+                  disabled={busy}
+                  onClick={() =>
+                    act(api.seedDemo, "Three demo workloads scheduled")
+                  }
+                >
+                  <Icon name="bolt" size={16} />
+                  Load demo
+                </button>
+              )}
+              {["Overview", "Workloads"].includes(tab) && (
+                <button className="btn primary" onClick={() => setModal(true)}>
+                  <Icon name="plus" size={17} />
+                  New workload
+                </button>
+              )}
             </div>
           </div>
           {(error || connectionError) && (
@@ -890,183 +1017,132 @@ export default function App() {
               running={jobs.filter((j) => j.status === "RUNNING").length}
             />
           )}
-          <div className="metrics">
-            <div className="metric">
-              <div className="metric-label">
-                Grid carbon intensity
-                <Icon name="activity" />
+          {tab === "Overview" && (
+            <>
+              <div className="metrics overview-metrics">
+                <div className="metric">
+                  <div className="metric-label">
+                    Grid carbon intensity
+                    <Icon name="activity" />
+                  </div>
+                  <div className="metric-value">
+                    {fmt(grid.intensity_gco2_kwh)}
+                    <small>gCO₂/kWh</small>
+                  </div>
+                  <div className="metric-foot">
+                    <span>{mode}</span>
+                  </div>
+                </div>
+                <div className="metric">
+                  <div className="metric-label">
+                    Estimated CO₂ avoided
+                    <Icon name="leaf" />
+                  </div>
+                  <div className="metric-value">
+                    {fmt(totals.carbon_saved_g / 1000, 2)}
+                    <small>kg CO₂</small>
+                  </div>
+                  <div className="metric-foot">
+                    <span>Completed workloads only</span>
+                  </div>
+                </div>
+                <div className="metric">
+                  <div className="metric-label">
+                    Workloads completed
+                    <Icon name="layers" />
+                  </div>
+                  <div className="metric-value">
+                    {totals.jobs_completed}
+                    <small>/ {jobs.length} submitted</small>
+                  </div>
+                  <div className="metric-foot">
+                    <span>{pending.length} waiting for their window</span>
+                  </div>
+                </div>
               </div>
-              <div className="metric-value">
-                {fmt(grid.intensity_gco2_kwh)}
-                <small>gCO₂/kWh</small>
-              </div>
-              <div className="metric-foot">
-                <Badge tone="green">
-                  {grid.intensity_gco2_kwh < 150
-                    ? "Lower carbon"
-                    : grid.intensity_gco2_kwh < 250
-                      ? "Moderate carbon"
-                      : "Higher carbon"}
-                </Badge>
-                <span>{mode}</span>
-              </div>
-              <div className="mini-spark">
-                {state.grid.forecast.slice(0, 25).map((s, i) => (
-                  <i
-                    key={i}
-                    style={{
-                      height: Math.max(10, s.intensity_gco2_kwh / 4) + "%",
-                      opacity: 0.35 + i / 40,
-                    }}
-                  />
+              <div className="page-shortcuts">
+                {[
+                  [
+                    "Grid",
+                    "chart",
+                    "Explore the forecast",
+                    "Find your next cleaner window.",
+                  ],
+                  [
+                    "Workloads",
+                    "layers",
+                    "Manage workloads",
+                    pending.length +
+                      " pending · " +
+                      fmt(potential / 1000, 2) +
+                      " kg projected avoidance.",
+                  ],
+                  [
+                    "Impact",
+                    "leaf",
+                    "See your impact",
+                    "From completed work to estimated savings.",
+                  ],
+                ].map(([page, icon, title, description]) => (
+                  <button
+                    className="page-shortcut"
+                    key={page}
+                    onClick={() => setTab(page)}
+                  >
+                    <span className="shortcut-icon">
+                      <Icon name={icon} />
+                    </span>
+                    <span>
+                      <strong>{title}</strong>
+                      <small>{description}</small>
+                    </span>
+                    <Icon name="arrow" size={16} />
+                  </button>
                 ))}
               </div>
-            </div>
-            <div className="metric">
-              <div className="metric-label">
-                Estimated CO₂ avoided
-                <Icon name="leaf" />
-              </div>
-              <div className="metric-value">
-                {fmt(totals.carbon_saved_g / 1000, 2)}
-                <small>kg CO₂</small>
-              </div>
-              <div className="metric-foot">
-                <span className="green-text">
-                  {fmt(totals.carbon_saved_pct, 1)}% reduction
+            </>
+          )}
+          {tab === "Grid" && (
+            <div className="grid-page">
+              <div className="grid-selection">
+                <label>
+                  Highlight a workload window
+                  <select
+                    value={selected ?? ""}
+                    onChange={(e) => setSelected(e.target.value || null)}
+                  >
+                    <option value="">No workload selected</option>
+                    {jobs.map((j) => (
+                      <option key={j.id} value={j.id}>
+                        {j.name} · {j.id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <span>
+                  <Badge tone="green">{mode}</Badge>{" "}
+                  <small>All times UTC</small>
                 </span>
-                <span>Completed jobs only</span>
               </div>
-            </div>
-            <div className="metric">
-              <div className="metric-label">
-                Queued opportunity
-                <Icon name="chart" />
-              </div>
-              <div className="metric-value">
-                {fmt(potential / 1000, 2)}
-                <small>kg CO₂</small>
-              </div>
-              <div className="metric-foot">
-                <span className="green-text">
-                  {pending.length} flexible workloads
-                </span>
-                <span>Projected avoidance</span>
-              </div>
-            </div>
-            <div className="metric">
-              <div className="metric-label">
-                Workloads completed
-                <Icon name="layers" />
-              </div>
-              <div className="metric-value">
-                {totals.jobs_completed}
-                <small>/ {jobs.length} submitted</small>
-              </div>
-              <div className="metric-foot">
-                <span className="green-text">
-                  {jobs.filter((j) => j.status === "RUNNING").length} executing
-                  now
-                </span>
-                <span>Real CPU work</span>
-              </div>
-            </div>
-          </div>
-          {tab === "Overview" && (
-            <div className="overview-grid">
               <Forecast
                 slots={state.grid.forecast}
                 decision={decision}
                 horizon={horizon}
                 setHorizon={setHorizon}
               />
-              <Panel
-                title="Timing is everything."
-                kicker="ARBITRAGE ENGINE"
-                extra={
-                  <span className="engine-icon">
-                    <Icon name="bolt" />
-                  </span>
-                }
-                className="decision"
-              >
-                <div className="decision-status">
-                  <Badge tone="green">
-                    {job?.status === "DONE"
-                      ? "EXECUTION COMPLETE"
-                      : decision
-                        ? decision.action === "WAIT"
-                          ? "CLEANER WINDOW FOUND"
-                          : "READY TO EXECUTE"
-                        : "ENGINE READY"}
-                  </Badge>
-                </div>
-                <div className="decision-main">
-                  {job?.status === "DONE"
-                    ? "Execution complete."
-                    : decision
-                      ? decision.action === "WAIT"
-                        ? "Wait for greener."
-                        : "The time is now."
-                      : "A little flexibility.\nA lot of possibility."}
-                </div>
-                <p>
-                  {job
-                    ? job.name
-                    : "Submit a workload to find its cleanest execution window."}
-                </p>
-                {decision ? (
-                  <>
-                    <div className="saving-number">
-                      {fmt(
-                        job?.status === "DONE"
-                          ? state.impacts?.[selected]?.saved_pct
-                          : decision.carbon_saved_pct,
-                        1,
-                      )}
-                      <span>%</span>
-                      <small>
-                        {job?.status === "DONE"
-                          ? "estimated completed-job reduction"
-                          : "potential carbon reduction"}
-                      </small>
-                    </div>
-                    <div className="decision-details">
-                      <div>
-                        <span>Scheduled start</span>
-                        <b>{time(decision.run_at_iso)} UTC</b>
-                      </div>
-                      <div>
-                        <span>Feasible windows</span>
-                        <b>{decision.feasible_windows}</b>
-                      </div>
-                      <div>
-                        <span>Estimated cost change</span>
-                        <b>
-                          {decision.cost_saved_pct >= 0 ? "−" : "+"}
-                          {fmt(Math.abs(decision.cost_saved_pct), 1)}%
-                        </b>
-                      </div>
-                    </div>
-                    <details>
-                      <summary>Why this decision?</summary>
-                      <p>{decision.reason}</p>
-                    </details>
-                  </>
-                ) : (
-                  <div className="orbit">
-                    <div />
-                    <Icon name="leaf" size={40} />
-                  </div>
-                )}
-                <div className="engine-footer">
-                  <span className="dot" />
-                  Carbon-first · deadline-constrained
-                </div>
-              </Panel>
+              <p className="page-note">
+                Carbon intensity is a forecast. Renewable share and price are
+                derived estimates.{" "}
+                <button
+                  className="text-btn"
+                  onClick={() => setTab("Simulation")}
+                >
+                  Grid source & demo controls <Icon name="arrow" size={14} />
+                </button>
+              </p>
             </div>
           )}
-          {(tab === "Overview" || tab === "Workloads") && (
+          {tab === "Workloads" && (
             <Panel
               title="Workload orchestration"
               kicker="COMPUTE, ON YOUR TERMS"
@@ -1123,7 +1199,7 @@ export default function App() {
                             className="job-select"
                             onClick={() => {
                               setSelected(j.id);
-                              setTab("Overview");
+                              setInspecting(true);
                             }}
                           >
                             <span className="job-icon">
@@ -1157,7 +1233,7 @@ export default function App() {
                                     : "amber"
                             }
                           >
-                            {j.status === "WAITING" ? "DEFERRED" : j.status}
+                            {j.status === "WAITING" ? state.decisions[j.id]?.action === "SHIFT" ? "SHIFT PLANNED" : "DEFERRED" : j.status}
                           </Badge>
                           {j.status === "RUNNING" && (
                             <progress value={j.progress} max="1" />
@@ -1263,6 +1339,9 @@ export default function App() {
               </div>
             </Panel>
           )}
+          {tab === "Regions" && <Regions regions={state.regions || []} mode={state.data_mode} Forecast={Forecast} nowIso={state.clock.virtual_iso} onUpdate={poll}/>}
+          {tab === "Intelligence" && <Intelligence model={state.model} onUpdate={poll}/>}
+          {tab === "Impact" && <p className="region-disclosure">Counterfactual estimates using declared energy and forecast intensity. All work executes locally; electricity consumption and geographic carbon savings are not measured. Synthetic jobs retain their scenario labels in receipts.</p>}
           {tab === "Impact" && (
             <div className="impact-layout">
               <Panel
@@ -1301,7 +1380,7 @@ export default function App() {
                       {
                         exported_at: new Date().toISOString(),
                         methodology:
-                          "Scenario estimates from user energy budgets and forecast intensity; not metered electricity. Completed jobs only.",
+                          "Counterfactual estimates from declared energy and recommended-region forecasts. All work executes locally; no metered electricity or verified regional avoidance. Completed jobs only. Per-job receipts retain data mode and forecast inputs.",
                         totals,
                         impacts: state.impacts,
                         jobs: jobs.filter((j) => j.status === "DONE"),
@@ -1339,7 +1418,7 @@ export default function App() {
                     [
                       "04",
                       "Honest grid signals",
-                      "Carbon forecasts come from the UK API when available. Renewable share is derived; prices are modelled. Accelerated time replays a daily profile.",
+                      "UK provider, imported, learned and synthetic signals carry separate labels. Indian demo values are assumptions. Prices are modelled, and regional SHIFT executes locally.",
                     ],
                   ].map(([n, t, d]) => (
                     <div key={n}>
@@ -1354,8 +1433,9 @@ export default function App() {
               </Panel>
             </div>
           )}
-          {(tab === "Overview" || tab === "Activity") && (
-            <div className="bottom-grid">
+          {tab === "Activity" && (
+            <div className="activity-page">
+              {" "}
               <Panel
                 title="Scheduler activity"
                 extra={
@@ -1383,6 +1463,12 @@ export default function App() {
                     ))}
                 </div>
               </Panel>
+            </div>
+          )}
+          {tab === "Simulation" && (
+            <div className="simulation-page">
+              <section className="panel learning-intro"><span className="eyebrow">SELF-CONTAINED DEMONSTRATION</span><h2>Three decisions. Real local computation.</h2><p>Start a labelled synthetic RUN / WAIT / SHIFT scenario at 360×. The Indian regional values are assumptions, and no workload moves to a remote cloud.</p><div className="learning-actions"><button className="btn primary" disabled={busy} onClick={()=>act(api.startScenario,"Guided scenario started")}>Start guided scenario</button><button className="btn" disabled={busy} onClick={()=>{if(window.confirm('Clear all session jobs and reset the clock? Running work must finish first.'))act(api.resetAll,'Session reset')}}>Reset session</button></div><p className="fine-print">Finish or cancel pending workloads before starting. The WAIT job becomes eligible after roughly 20 seconds of wall time.</p></section>
+              {" "}
               <Panel title="Grid & simulation" extra={<Icon name="activity" />}>
                 <div className="grid-controls">
                   <div>
@@ -1431,6 +1517,35 @@ export default function App() {
                   </button>
                 </div>
               </Panel>
+              <Panel title="A quick demo, at your pace." kicker="HOW IT WORKS">
+                <ol className="demo-steps">
+                  <li>
+                    <strong>Load three workloads.</strong>
+                    <p>Explore an urgent job and two flexible compute tasks.</p>
+                  </li>
+                  <li>
+                    <strong>Watch time move.</strong>
+                    <p>
+                      At 360×, one forecast hour passes in ten seconds. CPU work
+                      still runs at real speed.
+                    </p>
+                  </li>
+                  <li>
+                    <strong>Follow the result.</strong>
+                    <p>
+                      Open Workloads to watch execution, then Impact to inspect
+                      completed-job estimates.
+                    </p>
+                  </li>
+                </ol>
+                <button
+                  className="btn demo-link"
+                  onClick={() => setTab("Workloads")}
+                >
+                  Go to workloads
+                  <Icon name="arrow" size={15} />
+                </button>
+              </Panel>
             </div>
           )}
           <footer>
@@ -1438,17 +1553,110 @@ export default function App() {
               <Icon name="leaf" size={13} /> ECO-ARB · Built for a lighter
               footprint.
             </span>
-            <span>UK grid reference · Estimated impact · VINHACK</span>
+            <span>Labelled grid data · Local execution · Estimated impact</span>
           </footer>
         </main>
       </div>
+      {inspecting && (
+        <DetailDialog onClose={() => setInspecting(false)}>
+          {" "}
+          <Panel
+            title="Timing is everything."
+            kicker="ARBITRAGE ENGINE"
+            extra={
+              <span className="engine-icon">
+                <Icon name="bolt" />
+              </span>
+            }
+            className="decision"
+          >
+            <div className="decision-status">
+              <Badge tone="green">
+                {job?.status === "DONE"
+                  ? "EXECUTION COMPLETE"
+                  : decision
+                    ? decision.action === "WAIT"
+                      ? "CLEANER WINDOW FOUND"
+                      : decision.action === "SHIFT" ? "REGION SHIFT RECOMMENDED" : "READY TO EXECUTE"
+                    : "ENGINE READY"}
+              </Badge>
+            </div>
+            <div className="decision-main">
+              {job?.status === "DONE"
+                ? "Execution complete."
+                : decision
+                  ? decision.action === "WAIT"
+                    ? "Wait for greener."
+                    : decision.action === "SHIFT" ? "A cleaner region." : "The time is now."
+                  : "A little flexibility.\nA lot of possibility."}
+            </div>
+            <p>
+              {job
+                ? job.name
+                : "Submit a workload to find its cleanest execution window."}
+            </p>
+            {decision ? (
+              <>
+                <div className="saving-number">
+                  {fmt(
+                    job?.status === "DONE"
+                      ? state.impacts?.[selected]?.saved_pct
+                      : decision.carbon_saved_pct,
+                    1,
+                  )}
+                  <span>%</span>
+                  <small>
+                    {job?.status === "DONE"
+                      ? "estimated completed-job reduction"
+                      : "potential carbon reduction"}
+                  </small>
+                </div>
+                <div className="decision-details">
+                  <div><span>Region recommendation</span><b>{decision.source_region} → {decision.target_region}</b></div>
+                  <div><span>Data basis</span><b>{decision.data_basis}</b></div>
+                  <p className="fine-print">Real computation runs locally. Energy is declared; regional emissions are counterfactual estimates.</p>
+                  <div>
+                    <span>Scheduled start</span>
+                    <b>{time(decision.run_at_iso)} UTC</b>
+                  </div>
+                  <div>
+                    <span>Feasible windows</span>
+                    <b>{decision.feasible_windows}</b>
+                  </div>
+                  <div>
+                    <span>Estimated cost change</span>
+                    <b>
+                      {decision.cost_saved_pct >= 0 ? "−" : "+"}
+                      {fmt(Math.abs(decision.cost_saved_pct), 1)}%
+                    </b>
+                  </div>
+                </div>
+                <details>
+                  <summary>Why this decision?</summary>
+                  <p>{decision.reason}</p>
+                </details>
+              </>
+            ) : (
+              <div className="orbit">
+                <div />
+                <Icon name="leaf" size={40} />
+              </div>
+            )}
+            <div className="engine-footer">
+              <span className="dot" />
+              Carbon-first · deadline-constrained
+            </div>
+          </Panel>
+        </DetailDialog>
+      )}
       {modal && (
         <Composer
-          motion={motion}
+          regions={state.regions} model={state.model} motion={motion}
           onClose={closeModal}
           onSubmit={async (f) => {
             await api.createJob(f);
             await poll();
+            setTab("Workloads");
             setToast("Workload scheduled");
           }}
         />

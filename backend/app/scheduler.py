@@ -22,6 +22,8 @@ from .engine import decide, score_window
 from .executor import pool, run_job
 from .models import Job
 from .store import store
+from .regions import registry
+from .learning import learned
 
 scheduler = BackgroundScheduler(timezone="UTC")
 
@@ -46,6 +48,7 @@ def refresh_grid() -> None:
             f"({feed.status()['last_error']})",
             "WARN",
         )
+    registry.refresh()
 
 
 def _on_finished(job_id: str, future) -> None:
@@ -77,12 +80,32 @@ def _dispatch(job: Job, slots) -> None:
     if sum(j.status == "RUNNING" for j in store.jobs.values()) >= 4:
         return
     vnow = clock.now()
+    decision = store.decisions.get(job.id)
+    job.target_region = decision.target_region if decision else job.home_region
+    slots = registry.forecast(job.target_region, vnow, job.data_mode,
+                              job.forecast_method if job.target_region == job.home_region else "provider")
+
+    scored = score_window(slots, vnow, job.duration_minutes, job.energy_kwh)
+    if scored is None:
+        job.status = "WAITING"
+        store.log(f"{job.id}: selected region forecast expired; awaiting refresh", "WARN")
+        return
     job.status = "RUNNING"
     job.started_iso = iso(vnow)
     job.run_at_iso = iso(vnow)
     job.progress = 0.0
-
-    scored = score_window(slots, vnow, job.duration_minutes, job.energy_kwh)
+    job.execution_plan = {
+        "baseline_carbon_g": store.baselines.get(job.id), "estimated_carbon_g": scored[0],
+        "baseline_cost_gbp": store.baseline_costs.get(job.id), "modelled_cost_gbp": scored[1],
+        "scheduled_at": decision.run_at_iso if decision else iso(vnow),
+        "dispatched_at": iso(vnow), "target_region": job.target_region,
+        "forecast_method": job.forecast_method, "data_mode": job.data_mode,
+        "source_kinds": sorted({s.source_kind for s in slots}),
+        "execution": "local CPU demo", "energy_basis": "declared energy budget",
+        "energy_kwh": job.energy_kwh, "duration_minutes": job.duration_minutes,
+        "forecast": [s.model_dump() for s in slots],
+        "model": learned.status() if job.forecast_method == "learned" else None,
+    }
     if scored:
         actual_carbon, actual_cost = scored
         store.actual_carbon[job.id] = actual_carbon
@@ -120,8 +143,7 @@ def tick() -> None:
                 # The last moment we could have started and still finished in
                 # time has passed. Record the missed deadline without executing late.
                 store.log(
-                    f"{job.id} DEADLINE PRESSURE '{job.name}': starting now to salvage "
-                    f"the {job.deadline_iso} deadline is no longer feasible",
+                    f"{job.id} DEADLINE MISSED '{job.name}': {job.deadline_iso} is no longer feasible",
                     "WARN",
                 )
                 job.status = "MISSED"
@@ -129,9 +151,6 @@ def tick() -> None:
                 continue
 
             previous = store.decisions.get(job.id)
-            if previous and previous.action == "WAIT" and parse_iso(previous.run_at_iso) <= vnow:
-                _dispatch(job, slots)
-                continue
 
             # An operator-chosen window is a commitment, not a suggestion. Leave
             # it where they put it and just wait for it; re-optimising would
@@ -143,7 +162,16 @@ def tick() -> None:
                     _dispatch(job, slots)
                 continue
 
-            decision = decide(job, slots, vnow)
+            if previous and previous.action in ("WAIT", "SHIFT") and parse_iso(previous.run_at_iso) <= vnow:
+                _dispatch(job, slots)
+                continue
+            try:
+                decision = registry.plan(job, vnow)
+            except ValueError as exc:
+                if job.status != "WAITING":
+                    store.log(f"{job.id}: waiting for usable forecast coverage: {exc}", "WARN")
+                job.status = "WAITING"
+                continue
             previous = store.decisions.get(job.id)
 
             if job.id not in store.baselines:
@@ -153,11 +181,11 @@ def tick() -> None:
             # A RUN decision's run_at is always "now", which moves every tick,
             # so only a WAIT window shifting counts as a real change.
             changed = previous is None or previous.action != decision.action or (
-                decision.action == "WAIT" and previous.run_at_iso != decision.run_at_iso
+                decision.action in ("WAIT", "SHIFT") and (previous.run_at_iso != decision.run_at_iso or previous.target_region != decision.target_region)
             )
             store.set_decision(decision)
 
-            if decision.action == "RUN":
+            if decision.action == "RUN" or (decision.action == "SHIFT" and parse_iso(decision.run_at_iso) <= vnow):
                 if previous is not None and previous.action == "WAIT":
                     store.log(
                         f"{job.id} REPLAN -> RUN NOW: {decision.reason}", "PLAN"
@@ -170,7 +198,7 @@ def tick() -> None:
             if changed:
                 verb = "REPLAN" if previous is not None else "PLAN"
                 store.log(
-                    f"{job.id} {verb} -> WAIT until {decision.run_at_iso} "
+                    f"{job.id} {verb} -> {decision.action} ({decision.target_region}) until {decision.run_at_iso} "
                     f"(-{decision.carbon_saved_pct:.1f}% CO2, "
                     f"-{decision.cost_saved_pct:.1f}% cost)",
                     "PLAN",
