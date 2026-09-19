@@ -47,6 +47,37 @@ try {
     Write-Host "    -> Start the server:  .\start.ps1 -Port $Port"
 }
 
+# 2b. Where is every region's data coming from? This is the question to settle
+# before a demo: anything not marked REAL must not be described as measured.
+Write-Host ""
+try {
+    $s = (Invoke-WebRequest "http://127.0.0.1:$Port/api/state" -UseBasicParsing -TimeoutSec 10).Content | ConvertFrom-Json
+    Write-Host "[2b] Data provenance   (mode: $($s.data_mode))" -ForegroundColor Cyan
+    if ($s.data_mode -eq 'scenario') {
+        Write-Host "     SCENARIO MODE IS ON - every number on screen is synthetic." -ForegroundColor Yellow
+        Write-Host "     Unset ECO_ARB_DEMO_MODE and restart for real provider data."
+    }
+    foreach ($r in $s.regions) {
+        $kind = if ($r.current) { $r.current.source_kind } else { 'none' }
+        $real = $r.available -and $kind -notmatch 'synthetic'
+        $tag  = if ($real) { 'REAL     ' } else { 'NOT REAL ' }
+        $col  = if ($real) { 'Green' } else { 'Yellow' }
+        Write-Host ("     {0} {1,-22} {2}" -f $tag, $r.name, $kind) -ForegroundColor $col
+    }
+    Write-Host ""
+    Write-Host "     Renewable %: REAL only where source_kind is a NESO regional" -ForegroundColor Gray
+    Write-Host "     forecast (it carries a generation mix). Elsewhere it is derived" -ForegroundColor Gray
+    Write-Host "     from intensity. Price is always modelled. Job energy is your" -ForegroundColor Gray
+    Write-Host "     estimate, never metered." -ForegroundColor Gray
+    if (-not $env:ELECTRICITY_MAPS_TOKEN) {
+        Write-Host ""
+        Write-Host "     ELECTRICITY_MAPS_TOKEN is not set, so the Indian regions have no" -ForegroundColor Gray
+        Write-Host "     real feed. Set it, or import a forecast on the Regions tab." -ForegroundColor Gray
+    }
+} catch {
+    Write-Host "[2b] Could not read provenance: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
 # 3. Is the built frontend present and current?
 Write-Host ""
 if (Test-Path 'frontend/dist/index.html') {
