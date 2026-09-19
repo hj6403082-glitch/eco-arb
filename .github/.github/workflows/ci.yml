@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  backend:
+    name: Decision engine tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install
+        working-directory: backend
+        run: |
+          python -m pip install -q -r requirements.txt pytest
+      - name: Test
+        working-directory: backend
+        # The engine tests run entirely on the offline fallback curve, so CI
+        # never depends on the upstream API being reachable.
+        run: python -m pytest tests -q
+
+  frontend:
+    name: Lint and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+      - name: Lint
+        working-directory: frontend
+        # no-undef is on: a build alone will happily compile a reference to an
+        # undefined variable, which is a runtime crash, not a warning.
+        run: npm run lint
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  smoke:
+    name: End-to-end smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install backend
+        working-directory: backend
+        run: python -m pip install -q -r requirements.txt
+
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install smoke runner
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+
+      - name: Start stack
+        run: |
+          mkdir -p /tmp/eco-arb-logs
+          # Both servers bind 127.0.0.1 EXPLICITLY. Vite's default is
+          # `localhost`, which on a dual-stack runner resolves to ::1 first —
+          # the IPv4 health check below then polls forever and the job times
+          # out with the server apparently running. --strictPort turns a taken
+          # port into an immediate failure rather than a silent port shift.
+          (cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 \
+            > /tmp/eco-arb-logs/backend.log 2>&1 &)
+          (cd frontend && npm run dev -- --host 127.0.0.1 --port 5173 --strictPort \
+            > /tmp/eco-arb-logs/frontend.log 2>&1 &)
+
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/api/health >/dev/null \
+               && curl -sf -o /dev/null http://127.0.0.1:5173/; then
+              echo "stack up after $((i * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::stack did not come up within 60s"
+          echo "--- backend ---"; cat /tmp/eco-arb-logs/backend.log || true
+          echo "--- frontend ---"; cat /tmp/eco-arb-logs/frontend.log || true
+          exit 1
+
+      - name: Smoke
+        run: npm run smoke
+
+      - name: Server logs
+        if: failure()
+        run: |
+          echo "--- backend ---"; cat /tmp/eco-arb-logs/backend.log || true
+          echo "--- frontend ---"; cat /tmp/eco-arb-logs/frontend.log || true

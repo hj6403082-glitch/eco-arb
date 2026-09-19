@@ -1,0 +1,16 @@
+{
+  "job_id": "job-007",
+  "name": "grid-data-integrity-check",
+  "energy_kwh": 4.0,
+  "deadline_iso": "2026-09-18T20:04:23Z",
+  "run_at_iso": "2026-09-18T19:19:23Z",
+  "result": {
+    "workload": "hash_grind",
+    "rounds": 3600000,
+    "seed": "job-007:grid-data-integrity-check:4.0",
+    "final_digest": "6c2fb1b0031dc8651631f4ca4bbd8bfd92622c0358283525f800e343a7ddc02a",
+    "merkle_root": "aee2dd33dfa7b25f0995785113ca1f3a4460e4ca676481124950a9f885665e7b",
+    "leaves_sampled": 879,
+    "real_seconds": 3.828
+  }
+}

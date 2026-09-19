@@ -1,0 +1,16 @@
+{
+  "job_id": "job-001",
+  "name": "climate-model-validation",
+  "energy_kwh": 48.0,
+  "deadline_iso": "2026-09-19T19:06:43Z",
+  "run_at_iso": "2026-09-19T10:58:30Z",
+  "result": {
+    "workload": "hash_grind",
+    "rounds": 30000000,
+    "seed": "job-001:climate-model-validation:48.0",
+    "final_digest": "ea9575e8975e8e0b7907501077a4e618afdf658401e8ef021362646a67c8e9ef",
+    "merkle_root": "6c47f0d7d51e0495a957aa2074cefd3948ae6a9dd4abff1c404c71c259d5cd4b",
+    "leaves_sampled": 7325,
+    "real_seconds": 25.187
+  }
+}

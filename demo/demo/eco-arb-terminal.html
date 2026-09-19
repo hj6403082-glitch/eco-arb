@@ -1,0 +1,1956 @@
+<title>ECO-ARB Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=Azeret+Mono:wght@400;500;600&display=swap">
+<style>
+/* ECO-ARB — an editorial instrument panel. Paper ground, hairline rules, very
+   large type, and exactly one loud colour: an electric lime reserved for the
+   thing the product exists to produce. Data hues were run through the
+   six-checks validator against both surfaces before anything was drawn. */
+:root {
+  --paper:#FAFAF7; --paper-2:#F1F1EC; --sunk:#E8E8E1;
+  --rule:#DCDCD3; --rule-2:#C4C4B8;
+  --ink:#111110; --ink-2:#56564F; --ink-3:#86867C; --ink-4:#A8A89C;
+  --lime:#C2F000; --lime-ink:#141400; --lime-deep:#8FAF00;
+  --carbon:#2A5BD7;          /* series 1 — carbon intensity  (validated) */
+  --renew:#0B8A5F;           /* series 2 — renewable share   (validated) */
+  --good:#0B8A5F; --warning:#B86E00; --critical:#D93025;
+  --display:"Archivo", ui-sans-serif, system-ui, sans-serif;
+  --mono:"Azeret Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ease:cubic-bezier(.22,1,.36,1);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper:#14140F; --paper-2:#1C1C16; --sunk:#24241C;
+    --rule:#33332A; --rule-2:#44443A;
+    --ink:#F6F6F0; --ink-2:#B9B9AC; --ink-3:#8A8A7E; --ink-4:#63635A;
+    --lime:#C2F000; --lime-ink:#141400; --lime-deep:#D6FF3D;
+    --carbon:#5C8FFF; --renew:#17A06D;
+    --good:#17A06D; --warning:#E0A02A; --critical:#F0564A;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper:#14140F; --paper-2:#1C1C16; --sunk:#24241C;
+  --rule:#33332A; --rule-2:#44443A;
+  --ink:#F6F6F0; --ink-2:#B9B9AC; --ink-3:#8A8A7E; --ink-4:#63635A;
+  --lime:#C2F000; --lime-ink:#141400; --lime-deep:#D6FF3D;
+  --carbon:#5C8FFF; --renew:#17A06D;
+  --good:#17A06D; --warning:#E0A02A; --critical:#F0564A;
+  color-scheme: dark;
+}
+
+* { box-sizing:border-box; }
+html, body { height:100%; }
+body {
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--display); font-size:14px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+.app { display:flex; flex-direction:column; min-height:100%; }
+.num { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+.cap { font-family:var(--display); font-size:10px; font-weight:600; letter-spacing:.2em; text-transform:uppercase; color:var(--ink-3); }
+.gut { padding-inline:clamp(16px,4vw,52px); }
+
+/* A live blueprint behind everything: drifting grid, flowing charge, and a slow
+   scan. Driven by the same intensity signal the scheduler reads, so the room
+   behind the data breathes with the grid rather than looping decoratively. */
+#bgfx { position:fixed; inset:0; z-index:0; pointer-events:none; }
+.app { position:relative; z-index:1; }
+
+/* staggered reveal — sections arrive in sequence, not all at once */
+@keyframes rise { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:none} }
+.view.on > * { animation:rise .5s var(--ease) backwards; }
+.view.on > *:nth-child(1){animation-delay:.02s} .view.on > *:nth-child(2){animation-delay:.09s}
+.view.on > *:nth-child(3){animation-delay:.16s} .view.on > *:nth-child(4){animation-delay:.23s}
+
+/* job rows deal in like cards */
+@keyframes dealin { from{opacity:0;transform:translateX(-10px)} to{opacity:1;transform:none} }
+tbody tr.deal { animation:dealin .4s var(--ease) backwards; animation-delay:calc(var(--i) * 28ms); }
+tbody tr.sel-row:hover { background:var(--paper-2); transform:translateX(2px); }
+
+/* a bar that reads as work happening, not a static fill */
+@keyframes stripe { to { background-position:34px 0 } }
+.bar > i {
+  background-image:repeating-linear-gradient(115deg, var(--carbon) 0 10px, color-mix(in srgb, var(--carbon) 62%, transparent) 10px 17px);
+  background-size:34px 100%; animation:stripe .75s linear infinite;
+}
+/* rules that draw themselves under each section heading */
+@keyframes ruler { from{transform:scaleX(0)} to{transform:scaleX(1)} }
+.sec > header { position:relative; border-bottom:0; padding-bottom:9px; }
+.sec > header::after {
+  content:""; position:absolute; left:0; right:0; bottom:0; height:1.5px; background:var(--ink);
+  transform-origin:left; animation:ruler .65s var(--ease) backwards; animation-delay:.12s;
+}
+/* the hero rule grows in */
+@keyframes growrule { from{width:0} }
+.hero-rule { animation:growrule .9s var(--ease) .15s backwards; }
+/* value changed — give it a beat */
+@keyframes bump { 0%{transform:translateY(0)} 34%{transform:translateY(-3px)} 100%{transform:translateY(0)} }
+.bumped { animation:bump .42s var(--ease); display:inline-block; }
+/* controls acknowledge the press */
+@keyframes zap { 0%{box-shadow:0 0 0 0 var(--lime)} 100%{box-shadow:0 0 0 14px transparent} }
+.zap { animation:zap .5s var(--ease); }
+/* live status dots breathe by state */
+.dot.live-dot { animation:pulse 2.4s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .view.on > *, tbody tr.deal, .sec > header::after, .hero-rule, .bumped, .zap, .bar > i { animation:none }
+  tbody tr.sel-row:hover { transform:none }
+}
+
+/* the grid's pulse, always on screen */
+#pulsebar { position:fixed; top:0; left:0; right:0; height:4px; z-index:50; pointer-events:none; background:var(--carbon); transition:background .9s linear; }
+
+/* ---------- masthead ---------- */
+.mast { display:flex; align-items:flex-end; justify-content:space-between; gap:18px 30px; flex-wrap:wrap;
+  padding-top:calc(26px + env(safe-area-inset-top,0px)); padding-bottom:16px; }
+.word { font-size:clamp(30px,4.4vw,50px); font-weight:800; letter-spacing:-.045em; line-height:.92; }
+.word i { font-style:normal; color:var(--lime-deep); }
+.tagline { font-size:12px; color:var(--ink-2); margin-top:7px; max-width:42ch; letter-spacing:-.005em; }
+.mast-r { display:flex; align-items:center; gap:10px 14px; flex-wrap:wrap; }
+.readout { display:flex; flex-direction:column; align-items:flex-end; line-height:1.15; }
+.readout .big { font-family:var(--mono); font-size:19px; font-weight:600; letter-spacing:-.02em; }
+.readout .sm { font-size:9px; letter-spacing:.18em; text-transform:uppercase; color:var(--ink-3); margin-top:3px; }
+#liveI { color:var(--carbon); }
+
+.speeds { display:flex; border:1.5px solid var(--ink); border-radius:2px; overflow:hidden; }
+.speeds button {
+  font-family:var(--mono); font-size:11px; font-weight:600; padding:5px 11px; border:0;
+  background:transparent; color:var(--ink-2); cursor:pointer;
+  transition:background .18s var(--ease), color .18s var(--ease);
+}
+.speeds button:hover { background:var(--sunk); color:var(--ink); }
+.speeds button[aria-pressed="true"] { background:var(--ink); color:var(--paper); }
+.badge { font-size:9px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; padding:6px 9px; border-radius:2px; }
+.badge.live { background:var(--lime); color:var(--lime-ink); }
+.badge.rt { border:1.5px solid var(--rule-2); color:var(--ink-3); }
+.dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex:none; }
+.btn {
+  font-family:var(--display); font-weight:600; font-size:11px; letter-spacing:.02em;
+  border:1.5px solid var(--ink); background:transparent; color:var(--ink);
+  border-radius:2px; padding:6px 12px; cursor:pointer;
+  transition:background .18s var(--ease), color .18s var(--ease), transform .12s var(--ease);
+}
+.btn:hover { background:var(--ink); color:var(--paper); }
+.btn:active { transform:translateY(1px); }
+.btn.key::after { content:attr(data-key); margin-left:7px; opacity:.45; font-family:var(--mono); font-size:9px; }
+
+/* ---------- nav ---------- */
+.tabs { display:flex; align-items:center; gap:0; border-top:1.5px solid var(--ink); border-bottom:1px solid var(--rule); position:relative; flex-wrap:wrap; }
+.tab {
+  font-family:var(--display); font-size:12px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+  background:transparent; border:0; color:var(--ink-3); padding:14px 22px 13px 0; cursor:pointer;
+  margin-right:8px; transition:color .2s var(--ease);
+}
+.tab:hover { color:var(--ink-2); }
+.tab[aria-selected="true"] { color:var(--ink); }
+.tab .n { font-family:var(--mono); font-size:10px; font-weight:500; color:var(--ink-4); margin-right:8px; }
+.tabink { position:absolute; bottom:-1px; height:3px; background:var(--lime); transition:left .3s var(--ease), width .3s var(--ease); }
+.tabstat { margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--ink-3); padding:8px 0; }
+.tabstat b { color:var(--ink); font-weight:600; }
+
+.note { border-bottom:1px solid var(--rule); background:var(--paper-2); font-size:11.5px; line-height:1.6; padding:10px 0; color:var(--ink-2); }
+.note b { color:var(--ink); font-weight:700; }
+
+/* ---------- views ---------- */
+main { flex:1; padding-block:22px 40px; }
+.view { display:none; }
+.view.on { display:flex; flex-direction:column; gap:30px; animation:viewin .32s var(--ease); }
+@keyframes viewin { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:none} }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.pulse { animation:pulse 1.6s ease-in-out infinite; }
+@keyframes beat { 0%{transform:scale(1);opacity:.55} 18%{transform:scale(2);opacity:1} 100%{transform:scale(1);opacity:.55} }
+.beat { animation:beat 1s ease-out; }
+@keyframes kick { 0%{transform:scale(1)} 34%{transform:scale(1.04)} 100%{transform:scale(1)} }
+.kick { animation:kick .5s var(--ease); display:inline-block; }
+@keyframes flashrow { 0%{background:var(--lime)} 100%{background:transparent} }
+.flash { animation:flashrow 1.2s var(--ease); }
+@keyframes tapein { from{opacity:0;transform:translateX(-4px)} to{opacity:1;transform:none} }
+.tape .row.fresh { animation:tapein .32s ease-out; }
+@keyframes drawin { from{stroke-dashoffset:var(--len)} to{stroke-dashoffset:0} }
+@media (prefers-reduced-motion: reduce) { .pulse,.beat,.kick,.flash,.tape .row.fresh,.view.on { animation:none } .tabink { transition:none } }
+
+/* Sections are rules and labels, not boxes. */
+.sec { display:flex; flex-direction:column; gap:14px; }
+.sec > header { display:flex; align-items:baseline; justify-content:space-between; gap:12px; flex-wrap:wrap; border-bottom:1.5px solid var(--ink); padding-bottom:8px; }
+.sec h2 { margin:0; font-size:13px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; }
+.legend { display:flex; gap:16px; font-size:10.5px; color:var(--ink-3); flex-wrap:wrap; }
+.legend span { display:flex; align-items:center; gap:7px; }
+.card { border:1px solid var(--rule); background:var(--paper-2); border-radius:3px; }
+.row-side { display:grid; grid-template-columns:minmax(0,1fr) 392px; gap:26px; align-items:start; }
+@media (max-width:1040px) { .row-side { grid-template-columns:minmax(0,1fr) } }
+
+/* ---------- hero ---------- */
+.hero { display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,1fr); gap:34px 48px; align-items:end; }
+@media (max-width:900px) { .hero { grid-template-columns:minmax(0,1fr) } }
+.hero-num { font-family:var(--display); font-size:clamp(76px,12.5vw,168px); font-weight:800; letter-spacing:-.055em; line-height:.82; color:var(--ink); }
+.hero-unit { font-family:var(--display); font-size:clamp(22px,3vw,38px); font-weight:700; color:var(--ink-3); letter-spacing:-.03em; margin-left:6px; }
+.hero-sub { font-size:12.5px; color:var(--ink-2); margin-top:14px; max-width:38ch; }
+.hero-rule { height:10px; background:var(--lime); width:clamp(120px,22vw,260px); margin-top:20px; border-radius:1px; }
+.countdown { margin-top:20px; display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+.countdown[hidden] { display:none; }
+.cd { font-family:var(--mono); font-size:30px; font-weight:600; letter-spacing:-.03em; color:var(--ink); }
+.cd.imminent { color:var(--good); animation:pulse 1s ease-in-out infinite; }
+.cdname { font-family:var(--mono); font-size:11px; color:var(--ink-3); }
+
+/* the comparison: two measured rules, editorial rather than "bars in a box" */
+.vs { display:flex; flex-direction:column; gap:16px; }
+.vsrow { display:flex; flex-direction:column; gap:7px; }
+.vshead { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+.vshead .who { font-size:12px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; }
+.vshead .amt { font-family:var(--mono); font-size:19px; font-weight:600; letter-spacing:-.02em; }
+.vstrack { height:22px; background:var(--sunk); border-radius:1px; overflow:hidden; }
+.vstrack > i { display:block; height:100%; width:0; transition:width .85s var(--ease); }
+.vs-delta { font-size:12px; color:var(--ink-2); padding-top:3px; border-top:1px solid var(--rule); }
+.vs-delta b { font-weight:700; color:var(--ink); }
+
+.stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); border-top:1.5px solid var(--ink); }
+@media (max-width:660px) { .stats { grid-template-columns:minmax(0,1fr) } }
+.stats > div { padding:16px 20px 16px 0; border-right:1px solid var(--rule); }
+.stats > div:last-child { border-right:0; }
+.stats .v { font-family:var(--mono); font-size:22px; font-weight:600; letter-spacing:-.02em; margin-top:5px; }
+.wtrack { display:flex; gap:4px; margin-top:9px; max-width:180px; }
+.wcell { flex:1; height:6px; border-radius:1px; background:var(--sunk); transition:background .3s var(--ease); }
+.wcell.on { background:var(--lime); }
+
+/* ---------- charts ---------- */
+.chartbox { position:relative; }
+.flow { position:absolute; inset:0; width:100%; pointer-events:none; z-index:0; }
+.chartbox svg { position:relative; z-index:1; display:block; }
+.tip {
+  position:absolute; z-index:5; pointer-events:none; border:1.5px solid var(--ink);
+  background:var(--paper); border-radius:2px; padding:8px 11px; font-size:11px; line-height:1.65;
+  box-shadow:0 10px 28px rgba(0,0,0,.14); font-family:var(--mono);
+}
+.tip .t-time,.tip .t-p { color:var(--ink-3); }
+.tip .t-i { display:flex; align-items:center; gap:7px; color:var(--ink); font-weight:600; }
+.tip .t-r { color:var(--ink-2); }
+.ribbon-key { padding-top:7px; font-family:var(--mono); font-size:10px; color:var(--ink-3); }
+
+/* ---------- tape ---------- */
+.tape { min-height:220px; max-height:54vh; overflow-y:auto; font-family:var(--mono); font-size:11.5px; line-height:1.85; }
+.tape .row { display:flex; gap:12px; padding:1px 0; border-bottom:1px solid var(--rule); }
+.tape .ts { flex:none; color:var(--ink-4); }
+.tape .lv { flex:none; width:38px; font-weight:600; }
+.tape .tx { color:var(--ink-2); word-break:break-word; }
+
+/* ---------- tables ---------- */
+.scroll { max-height:min(58vh,580px); overflow:auto; }
+table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; }
+thead th {
+  position:sticky; top:0; background:var(--paper); font-family:var(--display); font-size:9.5px;
+  font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3);
+  text-align:left; padding:9px 10px 9px 0; border-bottom:1.5px solid var(--ink); white-space:nowrap;
+}
+tbody tr { border-bottom:1px solid var(--rule); transition:background .15s var(--ease); }
+tbody tr.sel-row { cursor:pointer; }
+tbody tr.sel-row:hover { background:var(--paper-2); }
+tbody tr[aria-selected="true"] { background:var(--paper-2); box-shadow:inset 3px 0 0 var(--lime); }
+tbody td { padding:9px 10px 9px 0; white-space:nowrap; }
+td.name { white-space:normal; min-width:0; font-family:var(--display); font-weight:600; }
+.jobname { display:flex; align-items:center; gap:8px; }
+.jobname .txt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bar { margin:6px 0 0 16px; height:4px; width:104px; border-radius:1px; background:var(--sunk); overflow:hidden; }
+.bar > i { display:block; height:100%; background:var(--carbon); transition:width .4s linear; }
+.x { border:0; background:transparent; color:var(--ink-4); cursor:pointer; font-family:var(--mono); font-size:15px; padding:0 3px; transition:color .15s var(--ease); }
+.x:hover { color:var(--critical); }
+.empty { padding:34px 0; text-align:center; color:var(--ink-3); font-size:12.5px; line-height:1.8; }
+.scen { display:flex; gap:7px; flex-wrap:wrap; }
+.scen button {
+  font-family:var(--display); font-weight:600; font-size:10.5px; letter-spacing:.06em;
+  border:1.5px solid var(--rule-2); background:transparent; color:var(--ink-2);
+  border-radius:2px; padding:5px 11px; cursor:pointer;
+  transition:border-color .18s var(--ease), color .18s var(--ease), background .18s var(--ease);
+}
+.scen button:hover { border-color:var(--ink); background:var(--lime); color:var(--lime-ink); }
+.slotnow td { background:var(--lime); color:var(--lime-ink); }
+
+/* ---------- decision ---------- */
+.dec { display:flex; flex-direction:column; gap:18px; }
+.dec-top { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.dec-name { font-size:17px; font-weight:700; letter-spacing:-.02em; }
+.dec-meta { font-family:var(--mono); font-size:10.5px; color:var(--ink-3); margin-top:4px; }
+.action { flex:none; font-size:11px; font-weight:800; letter-spacing:.16em; padding:6px 12px; border-radius:2px; }
+.saved { border-top:1.5px solid var(--ink); padding-top:12px; }
+.saved .big { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin-top:4px; }
+.saved .pcnum { font-family:var(--display); font-size:52px; font-weight:800; letter-spacing:-.05em; line-height:.9; }
+.saved .pc { font-size:18px; font-weight:700; color:var(--ink-3); }
+.saved .gg { font-family:var(--mono); font-size:11px; color:var(--ink-3); }
+.saved .cost { margin-top:9px; font-family:var(--mono); font-size:11px; color:var(--ink-3); }
+.saved .cost b { color:var(--ink-2); font-weight:500; }
+.grid2 { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 16px; }
+.stat .v { font-family:var(--mono); font-size:13.5px; margin-top:3px; }
+.stat .s { font-size:10px; color:var(--ink-3); }
+.reason { font-size:12.5px; line-height:1.75; color:var(--ink-2); margin:6px 0 0; }
+details summary { cursor:pointer; font-size:10px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3); }
+details summary:hover { color:var(--ink); }
+pre { margin:8px 0 0; max-height:170px; overflow:auto; border:1px solid var(--rule); background:var(--paper-2); border-radius:2px; padding:11px; font-family:var(--mono); font-size:10px; line-height:1.7; color:var(--ink-2); }
+
+/* ---------- forms ---------- */
+form { display:flex; flex-direction:column; gap:12px; }
+label { display:block; margin-bottom:5px; }
+input, select, textarea {
+  width:100%; font-family:var(--mono); font-size:12.5px; color:var(--ink); background:var(--paper);
+  border:1.5px solid var(--rule-2); border-radius:2px; padding:8px 10px; transition:border-color .18s var(--ease);
+}
+textarea { resize:vertical; min-height:60px; line-height:1.6; }
+input:focus, select:focus, textarea:focus { outline:3px solid var(--lime); outline-offset:0; border-color:var(--ink); }
+button:focus-visible, tr:focus-visible, summary:focus-visible, .tab:focus-visible { outline:3px solid var(--lime); outline-offset:2px; }
+.f2 { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; }
+.submit {
+  font-family:var(--display); font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+  background:var(--ink); color:var(--paper); border:0; border-radius:2px; padding:11px; cursor:pointer;
+  transition:background .18s var(--ease), color .18s var(--ease), transform .12s var(--ease);
+}
+.submit:hover { background:var(--lime); color:var(--lime-ink); }
+.submit:active { transform:translateY(1px); }
+.err { font-size:11.5px; color:var(--critical); }
+.nl { border-bottom:1px solid var(--rule); padding-bottom:18px; margin-bottom:18px; display:flex; flex-direction:column; gap:10px; }
+.nl[hidden] { display:none; }
+.nl-row { display:flex; gap:9px; align-items:center; }
+.nl-go {
+  font-family:var(--display); font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+  flex:1; background:var(--lime); color:var(--lime-ink); border:0; border-radius:2px; padding:11px; cursor:pointer;
+  transition:filter .18s var(--ease), transform .12s var(--ease);
+}
+.nl-go:hover { filter:brightness(1.08); }
+.nl-go:active { transform:translateY(1px); }
+.nl-go:disabled { opacity:.45; cursor:default; }
+.nl-status { font-family:var(--mono); font-size:11px; color:var(--ink-3); min-height:16px; line-height:1.5; }
+.nl-status.bad { color:var(--critical); }
+.nl-ex { font-size:10.5px; color:var(--ink-3); line-height:1.6; }
+.nl-ex button { font-family:inherit; font-size:10.5px; color:var(--ink); background:none; border:0; border-bottom:1.5px solid var(--lime); padding:0; cursor:pointer; }
+
+/* ---------- boot + keys ---------- */
+#boot { position:fixed; inset:0; z-index:60; background:var(--paper); display:flex; align-items:center; justify-content:center; padding:24px; transition:opacity .35s var(--ease); }
+#boot.out { opacity:0; }
+#boot .lines { max-width:540px; width:100%; }
+#boot .bt { font-size:clamp(38px,7vw,74px); font-weight:800; letter-spacing:-.05em; line-height:.9; margin-bottom:6px; }
+#boot .bt i { font-style:normal; color:var(--lime-deep); }
+#boot .brule { height:10px; background:var(--lime); width:0; animation:grow .85s var(--ease) forwards; margin-bottom:20px; }
+@keyframes grow { to { width:min(280px,55%) } }
+#boot .ln { font-family:var(--mono); font-size:11.5px; color:var(--ink-2); line-height:2; }
+#boot .ok { color:var(--good); font-weight:600; }
+#keys { position:fixed; inset:0; z-index:70; background:rgba(17,17,16,.55); display:flex; align-items:center; justify-content:center; padding:24px; }
+#keys[hidden] { display:none; }
+#keys .card2 { border:1.5px solid var(--ink); background:var(--paper); border-radius:3px; padding:26px 28px; max-width:420px; width:100%; }
+#keys dl { display:grid; grid-template-columns:auto 1fr; gap:11px 18px; margin:16px 0 0; font-size:12.5px; }
+#keys dt { font-family:var(--mono); font-size:11px; color:var(--ink); background:var(--sunk); border-radius:2px; padding:2px 8px; justify-self:start; }
+#keys dd { margin:0; color:var(--ink-2); }
+footer { border-top:1.5px solid var(--ink); padding-block:16px 26px; font-size:11px; color:var(--ink-3); line-height:1.8; }
+footer a { color:var(--ink); }
+</style>
+
+<div id="pulsebar"></div>
+<canvas id="bgfx"></canvas>
+
+<div id="boot"><div class="lines">
+  <div class="bt">ECO<i>-</i>ARB</div>
+  <div class="brule"></div>
+  <div class="ln" id="bootlines"></div>
+</div></div>
+
+<div id="keys" hidden><div class="card2">
+  <div class="cap">Keyboard</div>
+  <dl>
+    <dt>1 – 4</dt><dd>Overview · Jobs · Grid · Activity</dd>
+    <dt>[ ]</dt><dd>Slower / faster clock</dd>
+    <dt>S · F · T</dt><dd>Nightly batch · CI fleet · Training farm</dd>
+    <dt>C</dt><dd>Copy a session summary</dd>
+    <dt>R</dt><dd>Reset</dd>
+    <dt>/</dt><dd>Focus the plain-English box</dd>
+    <dt>?</dt><dd>This panel</dd>
+  </dl>
+  <p style="margin:18px 0 0;font-size:11.5px;color:var(--ink-3)">Esc or ? to close.</p>
+</div></div>
+
+<div class="app">
+  <div class="gut">
+    <header class="mast">
+      <div>
+        <div class="word">ECO<i>-</i>ARB</div>
+        <p class="tagline">Defers compute to the cleanest half-hour the grid will offer before your deadline — then actually runs it.</p>
+      </div>
+      <div class="mast-r">
+        <div class="readout">
+          <span class="big" id="clock">--/-- --:--</span>
+          <span class="sm">Grid clock UTC</span>
+        </div>
+        <div class="readout">
+          <span class="big"><span class="dot live-dot" id="beat" style="background:var(--good);margin-right:6px"></span><span id="liveI">—</span></span>
+          <span class="sm">gCO₂/kWh now</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+          <div class="speeds" id="speeds"></div>
+          <span id="compression" class="badge rt">Real time</span>
+        </div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap">
+          <button class="btn key" id="copy" data-key="C">Copy summary</button>
+          <button class="btn key" id="reset" data-key="R">Reset</button>
+          <button class="btn key" id="help" data-key="?">Keys</button>
+        </div>
+      </div>
+    </header>
+
+    <nav class="tabs" id="tabs" role="tablist">
+      <button class="tab" role="tab" data-view="overview" aria-selected="true"><span class="n">01</span>Overview</button>
+      <button class="tab" role="tab" data-view="jobs" aria-selected="false"><span class="n">02</span>Jobs</button>
+      <button class="tab" role="tab" data-view="grid" aria-selected="false"><span class="n">03</span>Grid</button>
+      <button class="tab" role="tab" data-view="activity" aria-selected="false"><span class="n">04</span>Activity</button>
+      <span class="tabink" id="tabink"></span>
+      <span class="tabstat" id="tabstat"></span>
+    </nav>
+  </div>
+
+  <div class="note"><div class="gut">
+    <b>Hosted demo.</b> The scheduler runs entirely in your browser on a <b>modelled</b> UK grid curve —
+    this sandbox blocks outbound API calls, so it cannot fetch live carbon data. The decision engine,
+    the compressed clock and the SHA-256 workload are the real implementations.
+  </div></div>
+
+  <main class="gut">
+    <!-- ============ OVERVIEW ============ -->
+    <section class="view on" id="v-overview" role="tabpanel">
+      <div class="hero">
+        <div>
+          <div class="cap" id="heroCap">CO₂ avoided this session</div>
+          <div style="display:flex;align-items:baseline;flex-wrap:wrap">
+            <span class="hero-num" id="heroNum">0</span><span class="hero-unit" id="heroUnit">g</span>
+          </div>
+          <div class="hero-rule"></div>
+          <div class="hero-sub" id="heroSub">Nothing dispatched yet</div>
+          <div class="countdown" id="cdWrap" hidden>
+            <span class="cap">Next dispatch in</span>
+            <span class="cd num" id="cd">--:--:--</span>
+            <span class="cdname" id="cdName"></span>
+          </div>
+        </div>
+
+        <div class="vs">
+          <div class="cap" id="vsCap">Same jobs, same deadlines</div>
+          <div class="vsrow">
+            <div class="vshead"><span class="who">Run now</span><span class="amt" id="vsNaiveAmt">—</span></div>
+            <div class="vstrack"><i id="vsNaive" style="background:var(--critical)"></i></div>
+          </div>
+          <div class="vsrow">
+            <div class="vshead"><span class="who">ECO-ARB</span><span class="amt" id="vsEcoAmt">—</span></div>
+            <div class="vstrack"><i id="vsEco" style="background:var(--lime)"></i></div>
+          </div>
+          <div class="vs-delta" id="vsDelta">Awaiting the first dispatch</div>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div><div class="cap">Workers</div><div class="v" id="mWork">0 / 4</div><div class="wtrack" id="wTrack"></div></div>
+        <div><div class="cap">Completed</div><div class="v" id="mDone">0 / 0</div></div>
+        <div><div class="cap">Fleet energy</div><div class="v" id="mEnergy">0 kWh</div></div>
+      </div>
+
+      <div class="sec">
+        <header>
+          <h2>Where the selected job will run</h2>
+          <div class="legend">
+            <span><i class="dot" style="background:var(--critical)"></i> if run now</span>
+            <span><i class="dot" style="background:var(--lime-deep)"></i> chosen window</span>
+          </div>
+        </header>
+        <div class="chartbox" id="boxOv">
+          <canvas class="flow" id="flowOv"></canvas>
+          <svg id="chartOv" width="100%" height="330" role="img"
+               aria-label="Carbon intensity forecast with the selected job's chosen window marked"></svg>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ JOBS ============ -->
+    <section class="view" id="v-jobs" role="tabpanel">
+      <div class="row-side">
+        <div class="sec">
+          <header>
+            <h2>Job queue</h2>
+            <div class="scen">
+              <button type="button" data-scen="nightly">Nightly batch</button>
+              <button type="button" data-scen="ci">CI fleet</button>
+              <button type="button" data-scen="farm">Training farm</button>
+            </div>
+          </header>
+          <div class="scroll" id="qwrap"></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:30px;min-width:0">
+          <div class="sec"><header><h2>Decision</h2></header><div id="decision"></div></div>
+          <div class="sec">
+            <header><h2>Submit job</h2></header>
+            <div>
+              <div class="nl" id="nlpanel" hidden>
+                <div class="cap">Describe it in plain English</div>
+                <textarea id="nlText" rows="2" placeholder="retrain the recommender overnight, about 40 kWh, needs 4 hours, done by 9am"></textarea>
+                <div class="nl-row">
+                  <button class="nl-go" id="nlGo" type="button">Schedule it</button>
+                  <button class="btn" id="nlStop" type="button" hidden>Stop</button>
+                </div>
+                <div class="nl-status" id="nlStatus"></div>
+                <div class="nl-ex">Try:
+                  <button type="button" data-ex="back up the photo library sometime tonight, 8 kWh, takes half an hour">a flexible backup</button> ·
+                  <button type="button" data-ex="urgent invoice export, 3 kWh, 20 minutes, needed within the hour">something urgent</button>
+                </div>
+              </div>
+              <form id="form">
+                <div><label class="cap" for="f-name">Name</label><input id="f-name" value="ml-training-batch"></div>
+                <div class="f2">
+                  <div><label class="cap" for="f-kwh">Energy kWh</label><input id="f-kwh" type="number" min="0.1" step="0.1" value="25"></div>
+                  <div><label class="cap" for="f-dur">Duration min</label><input id="f-dur" type="number" min="1" step="1" value="90"></div>
+                  <div><label class="cap" for="f-dl">Deadline h</label><input id="f-dl" type="number" min="0.25" max="24" step="0.25" value="24"></div>
+                  <div><label class="cap" for="f-wl">Workload</label><select id="f-wl"><option value="hash_grind">hash_grind</option></select></div>
+                </div>
+                <div class="err" id="formErr" hidden></div>
+                <button class="submit" type="submit">Submit job</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ GRID ============ -->
+    <section class="view" id="v-grid" role="tabpanel">
+      <div class="sec">
+        <header>
+          <h2>Carbon intensity forecast · next 24h</h2>
+          <div class="legend">
+            <span><i class="dot" style="background:var(--carbon)"></i> gCO₂/kWh · modelled</span>
+            <span><i class="dot" style="background:var(--renew)"></i> renewable % · derived</span>
+          </div>
+        </header>
+        <div class="chartbox" id="boxGrid">
+          <canvas class="flow" id="flowGrid"></canvas>
+          <svg id="chartGrid" width="100%" height="264" role="img"
+               aria-label="Carbon intensity forecast for the next 24 hours in grams of CO2 per kilowatt hour"></svg>
+        </div>
+        <div>
+          <svg id="ribbon" width="100%" height="22" role="img"
+               aria-label="The same 24 hours as a ribbon, darker meaning higher carbon intensity"></svg>
+          <div class="ribbon-key" id="ribKey"></div>
+          <svg id="strip" width="100%" height="56" role="img"
+               aria-label="Renewable share of generation over the same 24 hours, percent"></svg>
+        </div>
+      </div>
+      <div class="sec">
+        <header><h2>Half-hour slots</h2><span style="font-size:11px;color:var(--ink-3)">the 48 windows the engine searches</span></header>
+        <div class="scroll" id="slots"></div>
+      </div>
+    </section>
+
+    <!-- ============ ACTIVITY ============ -->
+    <section class="view" id="v-activity" role="tabpanel">
+      <div class="sec">
+        <header><h2>Cumulative CO₂ avoided</h2><span style="font-size:11px;color:var(--ink-3)">banked, across the session</span></header>
+        <div class="chartbox" id="boxCum">
+          <svg id="cum" width="100%" height="150" role="img" aria-label="Cumulative carbon avoided over the session, in grams"></svg>
+        </div>
+      </div>
+      <div class="sec">
+        <header><h2>Scheduler tape</h2><span style="font-size:11px;color:var(--ink-3)" id="tapeCount"></span></header>
+        <div class="tape" id="tape"></div>
+      </div>
+    </section>
+  </main>
+
+  <div class="gut"><footer>
+    Carbon is the only optimisation target; cost is scored on the same windows and reported beside it,
+    but never breaks a tie. Renewable share is derived from intensity and price is modelled — neither
+    is measured.
+    <a href="https://github.com/krishiyswim23-swagger/ECO---ARB" target="_blank" rel="noopener">github.com/krishiyswim23-swagger/ECO---ARB</a>
+  </footer></div>
+</div>
+
+<script>
+"use strict";
+const SLOT_MIN = 30;
+const SLOT_MS  = SLOT_MIN * 60000;
+const HORIZON_H = 24;
+const MIN_SAVING_PCT = 1.0;
+const PRICE_FLOOR = 35.0, PRICE_CEIL = 190.0;
+const REN_AT_ZERO = 95.0, REN_AT_MAX = 5.0, CAL_MAX = 400.0;
+const SPEEDS = [1, 60, 360];
+
+/* ---------------- virtual clock (clock.py) -------------------------------- */
+const clock = {
+  speed: 1,
+  anchorReal: Date.now(),
+  anchorVirtual: Date.now(),
+  now() { return this.anchorVirtual + (Date.now() - this.anchorReal) * this.speed; },
+  setSpeed(s) {
+    // Re-anchor so virtual time is continuous across the change — never jumps.
+    this.anchorVirtual = this.now();
+    this.anchorReal = Date.now();
+    this.speed = s;
+  },
+  reset() { this.anchorReal = Date.now(); this.anchorVirtual = Date.now(); },
+};
+
+const pad = (n) => String(n).padStart(2, "0");
+const iso = (ms) => new Date(ms).toISOString().slice(0, 19) + "Z";
+const hhmm = (ms) => { const d = new Date(ms); return pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes()); };
+const dayHhmm = (ms) => { const d = new Date(ms); return pad(d.getUTCDate()) + "/" + pad(d.getUTCMonth() + 1) + " " + hhmm(ms); };
+
+/* ---------------- grid feed (carbon.py) ----------------------------------- */
+function halfHourOfDay(ms) { const d = new Date(ms); return ((d.getUTCHours() * 60 + d.getUTCMinutes()) / SLOT_MIN) | 0; }
+function floorToSlot(ms) { return Math.floor(ms / SLOT_MS) * SLOT_MS; }
+
+/* Offline fallback curve, shaped like a UK winter weekday: overnight wind
+   trough, midday solar dip, hard evening gas peak. Identical to the Python. */
+const dayProfile = (() => {
+  const p = {};
+  for (let hh = 0; hh < 48; hh++) {
+    const hour = hh * SLOT_MIN / 60;
+    const base = 210;
+    const overnight = -70 * Math.exp(-((hour - 3) ** 2) / 8);
+    const solar     = -55 * Math.exp(-((hour - 13) ** 2) / 6);
+    const evening   =  95 * Math.exp(-((hour - 18.5) ** 2) / 3.5);
+    const morning   =  30 * Math.exp(-((hour - 8) ** 2) / 2.5);
+    p[hh] = Math.round(Math.max(20, base + overnight + solar + evening + morning) * 10) / 10;
+  }
+  return p;
+})();
+
+const derivedRenewable = (i) =>
+  Math.round((REN_AT_ZERO - (REN_AT_ZERO - REN_AT_MAX) * Math.min(Math.max(i / CAL_MAX, 0), 1)) * 10) / 10;
+
+function modelledPrice(i, slotMs) {
+  const frac = Math.min(Math.max(i / CAL_MAX, 0), 1);
+  const scarcity = PRICE_FLOOR + (PRICE_CEIL - PRICE_FLOOR) * frac;
+  const d = new Date(slotMs);
+  const hour = d.getUTCHours() + d.getUTCMinutes() / 60;
+  const demand = 1 + 0.18 * Math.exp(-((hour - 18) ** 2) / 6);
+  return Math.round(scarcity * demand * 100) / 100;
+}
+
+function buildSlot(t) {
+  const intensity = dayProfile[halfHourOfDay(t)];
+  return { t, intensity, renewable: derivedRenewable(intensity), price: modelledPrice(intensity, t) };
+}
+function forecast(fromMs, hours = HORIZON_H) {
+  const first = floorToSlot(fromMs);
+  const n = (hours * 60 / SLOT_MIN) | 0;
+  const out = new Array(n);
+  for (let k = 0; k < n; k++) out[k] = buildSlot(first + k * SLOT_MS);
+  return out;
+}
+
+/* ---------------- decision engine (engine.py) ----------------------------- */
+function scoreWindow(slots, start, durationMin, energyKwh) {
+  const end = start + durationMin * 60000;
+  if (!slots.length || end > slots[slots.length - 1].t + SLOT_MS) return null;
+  let carbon = 0, cost = 0, covered = 0;
+  for (const s of slots) {
+    const ss = s.t, se = s.t + SLOT_MS;
+    if (se <= start) continue;
+    if (ss >= end) break;
+    const mins = Math.max(0, (Math.min(end, se) - Math.max(start, ss)) / 60000);
+    if (mins <= 0) continue;
+    const share = mins / durationMin;
+    covered += mins;
+    const e = energyKwh * share;
+    carbon += e * s.intensity;
+    cost   += e * s.price / 1000;   // price is GBP/MWh, energy is kWh
+  }
+  if (covered + 1e-6 < durationMin) return null;
+  return { carbon, cost };
+}
+
+function decide(job, slots, now) {
+  const r2 = (v) => Math.round(v * 100) / 100;
+  const baseline = scoreWindow(slots, now, job.duration, job.energy);
+  if (!baseline) {
+    return {
+      action: "RUN", runAt: now, carbonSavedPct: 0, costSavedPct: 0,
+      reason: "Forecast horizon does not cover this job's duration; running now.",
+      baselineCarbon: 0, optimalCarbon: 0, baselineCost: 0, optimalCost: 0,
+      windowEnd: now + job.duration * 60000, slotsConsidered: slots.length, feasible: 0,
+    };
+  }
+
+  // Candidates: "right now", plus the top of every forecast slot after now.
+  // Including now itself is what makes RUN a real option rather than an
+  // artefact of slot alignment.
+  const candidates = [now];
+  for (const s of slots) if (s.t > now) candidates.push(s.t);
+
+  let bestCarbon = baseline.carbon, bestCost = baseline.cost, bestStart = now, feasible = 0;
+  for (const start of candidates) {
+    if (start + job.duration * 60000 > job.deadline) continue;
+    const sc = scoreWindow(slots, start, job.duration, job.energy);
+    if (!sc) continue;
+    feasible++;
+    // Strict < keeps ties on the EARLIER window: a job never drifts later for
+    // no gain.
+    if (sc.carbon < bestCarbon - 1e-9) { bestCarbon = sc.carbon; bestCost = sc.cost; bestStart = start; }
+  }
+
+  const deadlineBinding = now + job.duration * 60000 >= job.deadline - SLOT_MS;
+  let carbonSavedPct = baseline.carbon > 0 ? (baseline.carbon - bestCarbon) / baseline.carbon * 100 : 0;
+  let costSavedPct   = baseline.cost   > 0 ? (baseline.cost   - bestCost)   / baseline.cost   * 100 : 0;
+
+  let action, runAt, reason;
+  if (bestStart <= now || carbonSavedPct < MIN_SAVING_PCT) {
+    action = "RUN"; runAt = now;
+    bestCarbon = baseline.carbon; bestCost = baseline.cost;
+    carbonSavedPct = 0; costSavedPct = 0;
+    reason = deadlineBinding
+      ? `Deadline at ${iso(job.deadline)} leaves no room to defer a ${job.duration.toFixed(0)}-minute job. Running now.`
+      : `Grid is already near its cleanest reachable point (${slots[0].intensity.toFixed(0)} gCO₂/kWh); no window before the deadline beats running now by more than ${MIN_SAVING_PCT.toFixed(0)}%.`;
+  } else {
+    action = "WAIT"; runAt = bestStart;
+    const delayH = (bestStart - now) / 3600000;
+    const avgNow = baseline.carbon / job.energy;
+    const avgThen = bestCarbon / job.energy;
+    reason = `Deferring ${delayH.toFixed(1)}h to ${iso(bestStart)} moves the job from ~${avgNow.toFixed(0)} to ~${avgThen.toFixed(0)} gCO₂/kWh average intensity, cutting ${(baseline.carbon - bestCarbon).toFixed(0)} gCO₂ (${carbonSavedPct.toFixed(1)}%). Deadline ${iso(job.deadline)} still met.`;
+  }
+
+  return {
+    action, runAt,
+    carbonSavedPct: r2(carbonSavedPct), costSavedPct: r2(costSavedPct), reason,
+    baselineCarbon: baseline.carbon, optimalCarbon: bestCarbon,
+    baselineCost: baseline.cost, optimalCost: bestCost,
+    windowEnd: runAt + job.duration * 60000,
+    slotsConsidered: slots.length, feasible,
+  };
+}
+
+/* ---------------- real workload (executor.py) -----------------------------
+   Genuine SHA-256, chained, plus a Merkle root over the chain — the same
+   verifiable construction as the Python. Time compression does NOT reach here:
+   the clock decides WHEN a job starts; once started it burns real CPU at real
+   wall-clock speed, chunked across frames so the terminal stays responsive. */
+
+const K = new Uint32Array([
+  0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+  0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+  0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+  0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+  0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+  0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+  0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+  0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+
+const W = new Uint32Array(64);
+
+/** SHA-256 of exactly 32 bytes -> 32 bytes. One padded block, no allocation. */
+function sha256_32(inp, out) {
+  let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,
+      h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;
+  for (let i = 0; i < 8; i++) {
+    W[i] = (inp[i*4]<<24) | (inp[i*4+1]<<16) | (inp[i*4+2]<<8) | inp[i*4+3];
+  }
+  W[8] = 0x80000000;
+  for (let i = 9; i < 15; i++) W[i] = 0;
+  W[15] = 256;                                   // 32 bytes = 256 bits
+  for (let i = 16; i < 64; i++) {
+    const a = W[i-15], b = W[i-2];
+    const s0 = ((a>>>7)|(a<<25)) ^ ((a>>>18)|(a<<14)) ^ (a>>>3);
+    const s1 = ((b>>>17)|(b<<15)) ^ ((b>>>19)|(b<<13)) ^ (b>>>10);
+    W[i] = (W[i-16] + s0 + W[i-7] + s1) | 0;
+  }
+  let a=h0,b=h1,c=h2,d=h3,e=h4,f=h5,g=h6,h=h7;
+  for (let i = 0; i < 64; i++) {
+    const S1 = ((e>>>6)|(e<<26)) ^ ((e>>>11)|(e<<21)) ^ ((e>>>25)|(e<<7));
+    const ch = (e & f) ^ (~e & g);
+    const t1 = (h + S1 + ch + K[i] + W[i]) | 0;
+    const S0 = ((a>>>2)|(a<<30)) ^ ((a>>>13)|(a<<19)) ^ ((a>>>22)|(a<<10));
+    const mj = (a & b) ^ (a & c) ^ (b & c);
+    const t2 = (S0 + mj) | 0;
+    h=g; g=f; f=e; e=(d+t1)|0; d=c; c=b; b=a; a=(t1+t2)|0;
+  }
+  h0=(h0+a)|0; h1=(h1+b)|0; h2=(h2+c)|0; h3=(h3+d)|0;
+  h4=(h4+e)|0; h5=(h5+f)|0; h6=(h6+g)|0; h7=(h7+h)|0;
+  const hs = [h0,h1,h2,h3,h4,h5,h6,h7];
+  for (let i = 0; i < 8; i++) {
+    out[i*4]   = (hs[i]>>>24)&255; out[i*4+1] = (hs[i]>>>16)&255;
+    out[i*4+2] = (hs[i]>>>8)&255;  out[i*4+3] = hs[i]&255;
+  }
+  return out;
+}
+
+const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+
+/** Seed a 32-byte digest from an arbitrary string (one chained pass). */
+function seedDigest(str) {
+  const buf = new Uint8Array(32);
+  for (let i = 0; i < str.length; i++) buf[i % 32] ^= str.charCodeAt(i) & 255;
+  const out = new Uint8Array(32);
+  return sha256_32(buf, out);
+}
+
+const roundsFor = (kwh) => Math.min(Math.max(Math.round(1600000 * (kwh / 10)), 350000), 4000000);
+
+/** Runs the chain in ~18k-round slices so the UI keeps painting. */
+function runHashGrind(job, onProgress, onDone) {
+  const rounds = roundsFor(job.energy);
+  const seed = `${job.id}:${job.name}:${job.energy}`;
+  let digest = seedDigest(seed);
+  const scratch = new Uint8Array(32);
+  const leaves = [];
+  let i = 0;
+  const started = performance.now();
+  const CHUNK = 18000;
+
+  function slice() {
+    if (job.status !== "RUNNING") return;            // cancelled
+    const stop = Math.min(i + CHUNK, rounds);
+    for (; i < stop; i++) {
+      sha256_32(digest, scratch);
+      digest.set(scratch);
+      if ((i & 4095) === 0) leaves.push(digest.slice());
+    }
+    onProgress(i / rounds);
+    if (i < rounds) return setTimeout(slice, 0);
+
+    let level = leaves.length ? leaves : [digest.slice()];
+    const tmp = new Uint8Array(32);
+    while (level.length > 1) {
+      const next = [];
+      for (let j = 0; j < level.length; j += 2) {
+        const pair = new Uint8Array(64);
+        pair.set(level[j], 0);
+        pair.set(level[Math.min(j + 1, level.length - 1)], 32);
+        // Merkle step folds 64 bytes: hash each half, then chain.
+        sha256_32(pair.subarray(0, 32), tmp);
+        const t2 = new Uint8Array(32);
+        sha256_32(pair.subarray(32), t2);
+        for (let z = 0; z < 32; z++) tmp[z] ^= t2[z];
+        const node = new Uint8Array(32);
+        sha256_32(tmp, node);
+        next.push(node);
+      }
+      level = next;
+    }
+    onProgress(1);
+    onDone({
+      workload: "hash_grind",
+      rounds,
+      seed,
+      final_digest: hex(digest),
+      merkle_root: hex(level[0]),
+      leaves_sampled: leaves.length,
+      real_seconds: Math.round((performance.now() - started)) / 1000,
+    });
+  }
+  setTimeout(slice, 0);
+}
+
+
+/* ---------------- fleet ----------------------------------------------------
+   A real scheduler has finite workers, so this one does too: a job whose window
+   has arrived still waits for a free slot. It also keeps a 12-job fleet from
+   melting the browser, since every one of them burns real CPU. */
+const MAX_WORKERS = 4;
+
+const store = {
+  jobs: [], decisions: {}, logs: [], seq: 0,
+  baselines: {}, baselineCosts: {}, actualCarbon: {}, actualCost: {},
+  history: [], running: 0, selected: null,
+  nextId() { this.seq += 1; return "job-" + String(this.seq).padStart(3, "0"); },
+  log(text, level = "INFO") {
+    this.logs.push({ v: clock.now(), level, text });
+    if (this.logs.length > 220) this.logs.shift();
+  },
+  totals() {
+    let saved = 0, emitted = 0, savedCost = 0, energy = 0, done = 0;
+    for (const id of Object.keys(this.actualCarbon)) {
+      const actual = this.actualCarbon[id];
+      saved += (this.baselines[id] ?? actual) - actual;
+      emitted += actual;
+      savedCost += (this.baselineCosts[id] ?? 0) - (this.actualCost[id] ?? 0);
+      const j = this.jobs.find((x) => x.id === id);
+      if (j && j.status === "DONE") done += 1;
+    }
+    for (const j of this.jobs) energy += j.energy;
+    if (Math.abs(saved) < 1e-9) saved = 0;
+    if (Math.abs(savedCost) < 1e-12) savedCost = 0;
+    // Planned is what the CURRENT decisions will save once they execute. A
+    // fleet's value is decided when it is planned; counting only finished work
+    // hides that behind the clock.
+    let planned = 0, pendingJobs = 0, plannedNaive = 0, plannedEco = 0;
+    for (const j of this.jobs) {
+      if (!["QUEUED", "WAITING"].includes(j.status)) continue;
+      const d = this.decisions[j.id];
+      if (!d) continue;
+      plannedNaive += d.baselineCarbon;
+      plannedEco += d.optimalCarbon;
+      const gain = d.baselineCarbon - d.optimalCarbon;
+      if (gain > 0) { planned += gain; pendingJobs += 1; }
+    }
+    const naive = saved + emitted;
+    return { saved, emitted, naive, savedCost, energy, done, planned, pendingJobs, plannedNaive, plannedEco,
+             total: this.jobs.length, pct: naive > 0 ? saved / naive * 100 : 0 };
+  },
+};
+
+const SCENARIOS = {
+  nightly: { label: "nightly batch", speed: 60, jobs: [
+    ["nightly-model-retrain", 48, 120, 24],
+    ["batch-video-transcode", 12, 60, 12],
+    ["hourly-etl-rollup", 4, 30, 0.75],
+  ]},
+  ci: { label: "CI fleet", speed: 360, jobs: [
+    ["ci-build-api", 2, 20, 1], ["ci-build-web", 2.5, 25, 1.5],
+    ["ci-integration-suite", 5, 45, 9], ["ci-e2e-chrome", 4, 40, 11],
+    ["nightly-lint-sweep", 1.5, 15, 14], ["docs-site-rebuild", 1, 10, 16],
+    ["dependency-audit", 2, 20, 18], ["container-image-bake", 6, 50, 13],
+    ["perf-regression-run", 7, 60, 15], ["coverage-report", 2, 20, 12],
+    ["security-scan", 3, 30, 20], ["release-candidate-pack", 4, 35, 10],
+  ]},
+  farm: { label: "training farm", speed: 360, jobs: [
+    ["llm-finetune-shard-1", 55, 180, 24], ["llm-finetune-shard-2", 55, 180, 24],
+    ["llm-finetune-shard-3", 55, 180, 24], ["embedding-reindex", 30, 120, 20],
+    ["recsys-nightly-train", 40, 150, 22], ["eval-harness-sweep", 18, 90, 16],
+    ["feature-store-compact", 9, 45, 6],
+  ]},
+};
+
+function loadScenario(key) {
+  const s = SCENARIOS[key];
+  if (!s) return;
+  resetAll(false);
+  for (const [name, energy, duration, deadlineHours] of s.jobs) {
+    createJob({ name, energy, duration, deadlineHours, workload: "hash_grind" });
+  }
+  store.log(`Loaded scenario '${s.label}' — ${s.jobs.length} jobs`, "OK");
+  dealIn = true;
+  if (s.speed && s.speed !== clock.speed) {
+    clock.setSpeed(s.speed);
+    store.log(`TIME COMPRESSION ${s.speed}× — clock and grid feed only; workloads still run at real speed`, "INFO");
+  }
+  pickSelection();
+  render();
+}
+
+/* ---------------- scheduler ------------------------------------------------ */
+function dispatch(job, slots) {
+  const vnow = clock.now();
+  job.status = "RUNNING"; job.startedAt = vnow; job.runAt = vnow; job.progress = 0;
+  store.running += 1;
+
+  const scored = scoreWindow(slots, vnow, job.duration, job.energy);
+  if (scored) {
+    store.actualCarbon[job.id] = scored.carbon;
+    store.actualCost[job.id] = scored.cost;
+    let avoided = (store.baselines[job.id] ?? scored.carbon) - scored.carbon;
+    if (Math.abs(avoided) < 1e-9) avoided = 0;
+    store.log(`${job.id} EXECUTE '${job.name}' at ${slots[0].intensity.toFixed(0)} gCO₂/kWh -> ` +
+      `${scored.carbon.toFixed(0)} gCO₂ emitted, ${avoided.toFixed(0)} gCO₂ avoided vs submit-time baseline`, "RUN");
+  } else store.log(`${job.id} EXECUTE '${job.name}'`, "RUN");
+
+  flow.ripple();
+  requestAnimationFrame(() => {
+    const row = document.querySelector(`tr[data-id="${job.id}"]`);
+    if (row) { row.classList.remove("flash"); void row.offsetWidth; row.classList.add("flash"); }
+  });
+
+  runHashGrind(job, (p) => { job.progress = p; }, (result) => {
+    job.result = result; job.status = "DONE"; job.progress = 1; job.finishedAt = clock.now();
+    store.running = Math.max(0, store.running - 1);
+    store.log(`${job.id} DONE '${job.name}' in ${result.real_seconds.toFixed(1)}s real -> digest ${result.final_digest.slice(0, 16)}…`, "OK");
+    render();
+  });
+}
+
+let warnedCapacity = false;
+function tick() {
+  const vnow = clock.now();
+  const slots = forecast(vnow);
+  if (!slots.length) return;
+
+  for (const job of store.jobs) {
+    if (["RUNNING", "DONE", "FAILED", "MISSED"].includes(job.status)) continue;
+    const atCapacity = store.running >= MAX_WORKERS;
+
+    if (vnow + job.duration * 60000 > job.deadline) {
+      if (atCapacity) continue;
+      store.log(`${job.id} DEADLINE PRESSURE '${job.name}': starting now to salvage the ${iso(job.deadline)} deadline`, "WARN");
+      dispatch(job, slots);
+      continue;
+    }
+
+    const d = decide(job, slots, vnow);
+    const prev = store.decisions[job.id];
+    if (store.baselines[job.id] === undefined) {
+      store.baselines[job.id] = d.baselineCarbon;
+      store.baselineCosts[job.id] = d.baselineCost;
+    }
+    const changed = !prev || prev.action !== d.action || (d.action === "WAIT" && prev.runAt !== d.runAt);
+    store.decisions[job.id] = d;
+
+    if (d.action === "RUN" || d.runAt <= vnow) {
+      if (atCapacity) {
+        job.status = "QUEUED";
+        if (!warnedCapacity) {
+          store.log(`All ${MAX_WORKERS} workers busy — ready jobs are holding for a free slot`, "WARN");
+          warnedCapacity = true;
+        }
+        continue;
+      }
+      warnedCapacity = false;
+      if (prev && prev.action === "WAIT" && d.action === "RUN") store.log(`${job.id} REPLAN -> RUN NOW: ${d.reason}`, "PLAN");
+      dispatch(job, slots);
+      continue;
+    }
+
+    job.status = "WAITING";
+    job.runAt = d.runAt;
+    if (changed) {
+      store.log(`${job.id} ${prev ? "REPLAN" : "PLAN"} -> WAIT until ${iso(d.runAt)} ` +
+        `(-${d.carbonSavedPct.toFixed(1)}% CO₂, -${d.costSavedPct.toFixed(1)}% cost)`, "PLAN");
+    }
+  }
+
+  const t = store.totals();
+  store.history.push({ t: vnow, saved: t.saved });
+  if (store.history.length > 600) store.history.shift();
+}
+
+function createJob({ name, energy, duration, deadlineHours, workload }) {
+  const vnow = clock.now();
+  const deadline = vnow + Math.min(deadlineHours, HORIZON_H) * 3600000;
+  const job = {
+    id: store.nextId(), name, energy, duration, workload: workload || "hash_grind",
+    deadline, status: "QUEUED", submittedAt: vnow,
+    runAt: null, startedAt: null, finishedAt: null, result: null, progress: 0,
+  };
+  store.jobs.push(job);
+  store.log(`${job.id} SUBMIT '${job.name}' ${job.energy} kWh / ${job.duration} min, deadline ${iso(deadline)}`, "INFO");
+  const slots = forecast(vnow);
+  const d = decide(job, slots, vnow);
+  store.decisions[job.id] = d;
+  if (store.baselines[job.id] === undefined) {
+    store.baselines[job.id] = d.baselineCarbon;
+    store.baselineCosts[job.id] = d.baselineCost;
+  }
+  // "Run now" means now, not next tick. At 360x a tick is six virtual minutes,
+  // and on a rising ramp that drift makes a job emit more than the baseline it
+  // is measured against.
+  if (d.action === "RUN" && store.running < MAX_WORKERS) dispatch(job, slots);
+  return job;
+}
+
+function pickSelection() {
+  const ids = store.jobs.map((j) => j.id);
+  if (store.selected && ids.includes(store.selected)) return;
+  const waits = store.jobs.filter((j) => store.decisions[j.id]?.action === "WAIT")
+    .sort((a, b) => store.decisions[b.id].carbonSavedPct - store.decisions[a.id].carbonSavedPct);
+  store.selected = waits[0]?.id ?? store.jobs.find((j) => j.status === "RUNNING")?.id ?? ids[ids.length - 1] ?? null;
+}
+
+function resetAll(log = true) {
+  store.jobs = []; store.decisions = {}; store.baselines = {}; store.baselineCosts = {};
+  store.actualCarbon = {}; store.actualCost = {}; store.history = [];
+  store.seq = 0; store.selected = null; store.running = 0;
+  warnedCapacity = false;
+  if (log) { store.logs = []; clock.reset(); store.log("State cleared.", "INFO"); }
+}
+
+/* ---------------- rendering ------------------------------------------------- */
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+const STATUS_COLOR = {
+  QUEUED: "var(--ink-3)", WAITING: "var(--warning)", RUNNING: "var(--carbon)",
+  DONE: "var(--good)", FAILED: "var(--critical)", MISSED: "var(--critical)",
+};
+const LEVEL_COLOR = {
+  OK: "var(--good)", RUN: "var(--carbon)", PLAN: "var(--warning)",
+  WARN: "var(--critical)", ERR: "var(--critical)", INFO: "var(--ink-4)",
+};
+
+function mass(g) {
+  const a = Math.abs(g);
+  if (a >= 1e6) return [(g / 1e6).toFixed(2), "t"];
+  if (a >= 1000) return [(g / 1000).toFixed(a >= 10000 ? 0 : 1), "kg"];
+  return [g.toFixed(0), "g"];
+}
+const massStr = (g) => { const [v, u] = mass(g); return v + " " + u; };
+
+/* ---------------- views ----------------------------------------------------- */
+const VIEWS = ["overview", "jobs", "grid", "activity"];
+let view = "overview", justSwitched = true;
+
+function setView(name) {
+  if (!VIEWS.includes(name) || name === view) return;
+  view = name;
+  justSwitched = true;
+  if (name === "jobs") dealIn = true;   // rows deal in each time the tab opens
+  for (const v of VIEWS) $("v-" + v).classList.toggle("on", v === name);
+  for (const b of document.querySelectorAll(".tab")) {
+    b.setAttribute("aria-selected", String(b.dataset.view === name));
+  }
+  render();
+  moveInk();
+}
+function moveInk() {
+  const active = document.querySelector('.tab[aria-selected="true"]');
+  const ink = $("tabink");
+  if (!active || !ink) return;
+  ink.style.left = active.offsetLeft + "px";
+  ink.style.width = active.offsetWidth + "px";
+}
+
+function renderSpeeds() {
+  $("speeds").innerHTML = SPEEDS.map((s) =>
+    `<button type="button" data-speed="${s}" aria-pressed="${clock.speed === s}">${s}×</button>`).join("");
+}
+
+/* --- one forecast renderer, used by Overview and Grid --- */
+let hoverIdx = null, chartGeom = null;
+const M = { top: 18, right: 18, bottom: 24, left: 52 };
+
+function drawForecast(svgId, boxId, height, withBands) {
+  const box = $(boxId), svg = $(svgId);
+  const width = Math.max(320, box.clientWidth - 12);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const slots = forecast(clock.now()), vnow = clock.now();
+  if (!slots.length) { svg.innerHTML = ""; return; }
+
+  const t0 = slots[0].t, t1 = slots[slots.length - 1].t + SLOT_MS;
+  const yMax = Math.ceil(Math.max(...slots.map((s) => s.intensity)) * 1.12 / 50) * 50;
+  const iw = Math.max(10, width - M.left - M.right), ih = Math.max(10, height - M.top - M.bottom);
+  const X = (t) => M.left + (t - t0) / (t1 - t0) * iw;
+  const Y = (v) => M.top + ih - v / yMax * ih;
+  chartGeom = { X, Y, width, iw, box: boxId, t0, t1, top: M.top, ih, height, left: M.left };
+
+  let out = "";
+  for (const v of [0, .25, .5, .75, 1].map((f) => Math.round(yMax * f))) {
+    out += `<line x1="${M.left}" x2="${M.left + iw}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--rule)" stroke-width="1"/>`;
+    out += `<text x="${M.left - 8}" y="${Y(v) + 4}" text-anchor="end" font-size="10" fill="var(--ink-3)">${v}</text>`;
+  }
+  out += `<text x="12" y="${M.top + ih / 2}" font-size="10" fill="var(--ink-3)" text-anchor="middle" transform="rotate(-90 12 ${M.top + ih / 2})">gCO₂/kWh</text>`;
+  for (let t = Math.ceil(t0 / (3 * 3600e3)) * 3 * 3600e3; t < t1; t += 3 * 3600e3) {
+    out += `<text x="${X(t)}" y="${height - 7}" text-anchor="middle" font-size="10" fill="var(--ink-3)">${hhmm(t)}</text>`;
+  }
+
+  if (withBands) {
+    const sel = store.jobs.find((j) => j.id === store.selected);
+    const d = sel ? store.decisions[sel.id] : null;
+    if (sel && d) {
+      const bands = [{ s: d.runAt, e: d.windowEnd, kind: "planned",
+                       label: d.action === "WAIT" ? "CHOSEN WINDOW" : "RUNNING NOW" }];
+      if (d.action === "WAIT") bands.push({ s: vnow, e: vnow + sel.duration * 60000, kind: "baseline", label: "IF RUN NOW" });
+      for (const b of bands) {
+        const a = Math.max(X(b.s), M.left), z = Math.min(X(b.e), M.left + iw);
+        if (!(z > a)) continue;
+        const c = b.kind === "baseline" ? "var(--critical)" : "var(--lime-deep)";
+        out += `<rect x="${a}" y="${M.top}" width="${z - a}" height="${ih}" fill="${c}" fill-opacity="${b.kind === "baseline" ? .1 : .22}"/>`;
+        out += `<line x1="${a}" x2="${z}" y1="${M.top}" y2="${M.top}" stroke="${c}" stroke-width="2"/>`;
+        out += `<text x="${(a + z) / 2}" y="${M.top - 6}" text-anchor="middle" font-size="9" fill="var(--ink-2)" letter-spacing="0.06em">${b.label}</text>`;
+      }
+    }
+  }
+
+  let path = "";
+  for (const s of slots) {
+    path += `${path ? "L" : "M"}${X(s.t).toFixed(1)},${Y(s.intensity).toFixed(1)}L${X(s.t + SLOT_MS).toFixed(1)},${Y(s.intensity).toFixed(1)}`;
+  }
+  out += `<path d="${path}L${X(t1).toFixed(1)},${(M.top + ih).toFixed(1)}L${X(t0).toFixed(1)},${(M.top + ih).toFixed(1)}Z" fill="var(--carbon)" fill-opacity="0.1"/>`;
+  out += `<path id="${svgId}-line" d="${path}" fill="none" stroke="var(--carbon)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+
+  if (vnow >= t0 && vnow <= t1) {
+    const nx = X(vnow);
+    out += `<g id="nowg" data-x="${nx}">`;
+    out += `<line x1="${nx}" x2="${nx}" y1="${M.top}" y2="${M.top + ih}" stroke="var(--ink-2)" stroke-width="1"/>`;
+    out += `<circle id="nowglow" cx="${nx}" cy="${Y(slots[0].intensity)}" r="7" fill="var(--carbon)" fill-opacity="0.28"/>`;
+    out += `<circle id="nowpt" cx="${nx}" cy="${Y(slots[0].intensity)}" r="3.5" fill="var(--carbon)" stroke="var(--paper)" stroke-width="2"/>`;
+    out += `<circle cx="${nx}" cy="${M.top}" r="3.5" fill="var(--ink)" stroke="var(--paper)" stroke-width="2"/>`;
+    out += `<text x="${nx + 5}" y="${M.top + 10}" font-size="9" fill="var(--ink-2)" letter-spacing="0.08em">NOW</text></g>`;
+  }
+
+  const tip = $("tipbox");
+  if (tip && hoverIdx != null && slots[hoverIdx] && tip.parentElement === box) {
+    const s = slots[hoverIdx], hx = X(s.t + SLOT_MS / 2);
+    out += `<line x1="${hx}" x2="${hx}" y1="${M.top}" y2="${M.top + ih}" stroke="var(--ink-3)" stroke-width="1"/>`;
+    out += `<circle cx="${hx}" cy="${Y(s.intensity)}" r="4.5" fill="var(--carbon)" stroke="var(--paper)" stroke-width="2"/>`;
+    tip.hidden = false;
+    tip.style.left = Math.min(Math.max(hx - 66, 4), Math.max(4, width - 150)) + "px";
+    tip.style.top = "8px";
+    tip.innerHTML = `<div class="t-time">${hhmm(s.t)}–${hhmm(s.t + SLOT_MS)}</div>` +
+      `<div class="t-i"><i class="dot" style="background:var(--carbon)"></i>${s.intensity.toFixed(0)} gCO₂/kWh</div>` +
+      `<div class="t-r">${s.renewable.toFixed(0)}% renewable</div>` +
+      `<div class="t-p">£${s.price.toFixed(2)}/MWh</div>`;
+  } else if (tip) tip.hidden = true;
+
+  svg.innerHTML = out;
+
+  // Trace the curve in once when the view opens — never on the 1 Hz repaint.
+  if (justSwitched && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+    const line = document.getElementById(svgId + "-line");
+    if (line) {
+      const len = line.getTotalLength();
+      line.style.setProperty("--len", len);
+      line.style.strokeDasharray = len;
+      line.style.animation = "drawin .8s var(--ease) forwards";
+    }
+  }
+}
+
+function renderRibbon() {
+  const width = Math.max(320, $("boxGrid").clientWidth - 12), height = 20;
+  const svg = $("ribbon");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const slots = forecast(clock.now()), vnow = clock.now();
+  if (!slots.length) { svg.innerHTML = ""; return; }
+  const t0 = slots[0].t, t1 = slots[slots.length - 1].t + SLOT_MS;
+  const iw = Math.max(10, width - M.left - M.right);
+  const X = (t) => M.left + (t - t0) / (t1 - t0) * iw;
+  const lo = Math.min(...slots.map((s) => s.intensity)), hi = Math.max(...slots.map((s) => s.intensity));
+
+  const dark = isDark();
+  $("ribKey").textContent = dark
+    ? `dim ${lo.toFixed(0)} = cleanest · bright ${hi.toFixed(0)} = dirtiest gCO₂/kWh`
+    : `pale ${lo.toFixed(0)} = cleanest · deep ${hi.toFixed(0)} = dirtiest gCO₂/kWh`;
+  let out = "";
+  for (const s of slots) {
+    const f = hi > lo ? (s.intensity - lo) / (hi - lo) : 0;
+    const r = dark ? Math.round(20 + f * 114) : Math.round(220 - f * 198);
+    const g = dark ? Math.round(48 + f * 134) : Math.round(231 - f * 183);
+    const b = dark ? Math.round(92 + f * 147) : Math.round(250 - f * 128);
+    const a = X(s.t), z = X(s.t + SLOT_MS);
+    out += `<rect x="${a.toFixed(1)}" y="2" width="${Math.max(.6, z - a - 1).toFixed(1)}" height="${height - 4}" rx="1" fill="rgb(${r},${g},${b})"/>`;
+  }
+  if (vnow >= t0 && vnow <= t1) out += `<line id="ribnow" data-x="${X(vnow)}" x1="${X(vnow)}" x2="${X(vnow)}" y1="0" y2="${height}" stroke="var(--ink)" stroke-width="2"/>`;
+  svg.innerHTML = out;
+}
+
+function renderStrip() {
+  const width = Math.max(320, $("boxGrid").clientWidth - 12), height = 52;
+  const m = { top: 6, right: 18, bottom: 6, left: 52 };
+  const svg = $("strip");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const slots = forecast(clock.now()), vnow = clock.now();
+  if (!slots.length) { svg.innerHTML = ""; return; }
+  const t0 = slots[0].t, t1 = slots[slots.length - 1].t + SLOT_MS;
+  const iw = Math.max(10, width - m.left - m.right), ih = Math.max(6, height - m.top - m.bottom);
+  const X = (t) => m.left + (t - t0) / (t1 - t0) * iw;
+  const Y = (v) => m.top + ih - Math.min(100, Math.max(0, v)) / 100 * ih;
+
+  let path = "";
+  for (const s of slots) path += `${path ? "L" : "M"}${X(s.t).toFixed(1)},${Y(s.renewable).toFixed(1)}L${X(s.t + SLOT_MS).toFixed(1)},${Y(s.renewable).toFixed(1)}`;
+  let out = `<line x1="${m.left}" x2="${width - m.right}" y1="${Y(50)}" y2="${Y(50)}" stroke="var(--rule)" stroke-width="1"/>`;
+  out += `<text x="${m.left - 8}" y="${Y(100) + 8}" text-anchor="end" font-size="9" fill="var(--ink-3)">100</text>`;
+  out += `<text x="${m.left - 8}" y="${Y(0)}" text-anchor="end" font-size="9" fill="var(--ink-3)">0</text>`;
+  out += `<path d="${path}L${X(t1).toFixed(1)},${(m.top + ih).toFixed(1)}L${X(t0).toFixed(1)},${(m.top + ih).toFixed(1)}Z" fill="var(--renew)" fill-opacity="0.1"/>`;
+  out += `<path d="${path}" fill="none" stroke="var(--renew)" stroke-width="2" stroke-linejoin="round"/>`;
+  if (vnow >= t0 && vnow <= t1) out += `<line id="stripnow" data-x="${X(vnow)}" x1="${X(vnow)}" x2="${X(vnow)}" y1="${m.top}" y2="${m.top + ih}" stroke="var(--ink-2)" stroke-width="1"/>`;
+  svg.innerHTML = out;
+}
+
+function renderSlots() {
+  const slots = forecast(clock.now()), vnow = clock.now();
+  const lo = Math.min(...slots.map((s) => s.intensity)), hi = Math.max(...slots.map((s) => s.intensity));
+  const cur = floorToSlot(vnow);
+  const rows = slots.map((s) => {
+    const tag = s.intensity === lo ? `<span style="color:var(--good)">cleanest</span>`
+      : s.intensity === hi ? `<span style="color:var(--critical)">peak</span>` : "";
+    return `<tr class="${s.t === cur ? "slotnow" : ""}">
+      <td style="color:var(--ink-2)">${hhmm(s.t)}–${hhmm(s.t + SLOT_MS)}</td>
+      <td style="text-align:right">${s.intensity.toFixed(0)}</td>
+      <td style="text-align:right;color:var(--ink-2)">${s.renewable.toFixed(0)}%</td>
+      <td style="text-align:right;color:var(--ink-3)">£${s.price.toFixed(2)}</td>
+      <td>${s.t === cur ? `<span style="color:var(--carbon)">now</span>` : tag}</td></tr>`;
+  }).join("");
+  $("slots").innerHTML = `<table><thead><tr>
+    <th>Window</th><th style="text-align:right">gCO₂/kWh</th><th style="text-align:right">Renew</th>
+    <th style="text-align:right">£/MWh</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderCum() {
+  const width = Math.max(320, $("boxCum").clientWidth - 12), height = 140;
+  const m = { top: 14, right: 18, bottom: 18, left: 56 };
+  const svg = $("cum");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const h = store.history;
+  if (h.length < 2 || Math.max(...h.map((x) => x.saved)) <= 0) {
+    svg.innerHTML = `<text x="${width / 2}" y="${height / 2}" text-anchor="middle" font-size="11" fill="var(--ink-4)">Dispatch a job to start the trace</text>`;
+    return;
+  }
+  const t0 = h[0].t, t1 = Math.max(h[h.length - 1].t, t0 + 60000);
+  const peak = Math.max(...h.map((p) => p.saved), 1);
+  const iw = Math.max(10, width - m.left - m.right), ih = Math.max(10, height - m.top - m.bottom);
+  const X = (t) => m.left + (t - t0) / (t1 - t0) * iw;
+  const Y = (v) => m.top + ih - Math.max(0, v) / peak * ih;
+  let path = "";
+  for (const p of h) path += `${path ? "L" : "M"}${X(p.t).toFixed(1)},${Y(p.saved).toFixed(1)}`;
+  const last = h[h.length - 1];
+  let out = `<line x1="${m.left}" x2="${m.left + iw}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--rule)" stroke-width="1"/>`;
+  out += `<text x="${m.left - 8}" y="${Y(peak) + 8}" text-anchor="end" font-size="9" fill="var(--ink-3)">${massStr(peak)}</text>`;
+  out += `<text x="${m.left - 8}" y="${Y(0)}" text-anchor="end" font-size="9" fill="var(--ink-3)">0</text>`;
+  out += `<path d="${path}L${X(last.t).toFixed(1)},${Y(0).toFixed(1)}L${X(t0).toFixed(1)},${Y(0).toFixed(1)}Z" fill="var(--lime-deep)" fill-opacity="0.18"/>`;
+  out += `<path d="${path}" fill="none" stroke="var(--lime-deep)" stroke-width="2.5" stroke-linejoin="round"/>`;
+  out += `<circle cx="${X(last.t)}" cy="${Y(last.saved)}" r="4.5" fill="var(--lime-deep)" stroke="var(--paper)" stroke-width="2.5"/>`;
+  out += `<text x="${m.left}" y="${height - 4}" font-size="9" fill="var(--ink-4)">${hhmm(t0)}</text>`;
+  out += `<text x="${m.left + iw}" y="${height - 4}" text-anchor="end" font-size="9" fill="var(--ink-4)">${hhmm(last.t)}</text>`;
+  svg.innerHTML = out;
+}
+
+let dealIn = false, queueSig = "";
+function renderQueue() {
+  const wrap = $("qwrap");
+  // Rebuilding the table on every 1 Hz repaint restarts any row animation and
+  // churns the DOM for nothing. Only redraw when something actually moved.
+  const sig = store.jobs.map((j) => {
+    const d = store.decisions[j.id];
+    return [j.id, j.status, j.runAt,
+            d ? d.action + Math.round(d.carbonSavedPct) : ""].join(":");
+  }).join("|") + "#" + store.selected;
+  if (!dealIn && sig === queueSig && wrap.firstChild) return;
+  queueSig = sig;
+  if (!store.jobs.length) {
+    wrap.innerHTML = `<p class="empty">No jobs queued.<br>Pick a scenario above, or submit one on the right.</p>`;
+    return;
+  }
+  const rows = store.jobs.map((j, idx) => {
+    const d = store.decisions[j.id];
+    return `<tr class="sel-row${dealIn ? " deal" : ""}" style="--i:${idx}" data-id="${j.id}" aria-selected="${j.id === store.selected}" tabindex="0">
+      <td class="name">
+        <div class="jobname">
+          <i class="dot${j.status === "RUNNING" ? " pulse" : ""}" style="background:${STATUS_COLOR[j.status]}"></i>
+          <span class="txt" title="${esc(j.name)}">${esc(j.name)}</span>
+        </div>
+        ${j.status === "RUNNING" ? `<div class="bar"><i data-prog="${j.id}" style="width:${Math.round(j.progress * 100)}%"></i></div>` : ""}
+      </td>
+      <td style="text-align:right;color:var(--ink-2)">${j.energy}</td>
+      <td style="text-align:right;color:var(--ink-3)">${j.duration}m</td>
+      <td style="color:${STATUS_COLOR[j.status]}">${j.status}</td>
+      <td style="color:var(--ink-2)">${j.runAt ? hhmm(j.runAt) : "--:--"}</td>
+      <td style="color:var(--ink-3)">${hhmm(j.deadline)}</td>
+      <td style="text-align:right">${d && d.action === "WAIT"
+        ? `<span style="color:var(--good)">−${d.carbonSavedPct.toFixed(0)}%</span>`
+        : `<span style="color:var(--ink-4)">—</span>`}</td>
+      <td>${["QUEUED", "WAITING"].includes(j.status)
+        ? `<button class="x" data-cancel="${j.id}" title="Cancel ${esc(j.name)}" aria-label="Cancel ${esc(j.name)}">×</button>` : ""}</td>
+    </tr>`;
+  }).join("");
+  wrap.innerHTML = `<table><thead><tr>
+    <th>Job</th><th style="text-align:right">kWh</th><th style="text-align:right">Dur</th><th>Status</th>
+    <th>Runs</th><th>Deadline</th><th style="text-align:right">CO₂</th><th></th>
+  </tr></thead><tbody>${rows}</tbody></table>`;
+  dealIn = false;                       // consumed once the rows exist
+}
+
+function renderDecision() {
+  const el = $("decision");
+  const job = store.jobs.find((j) => j.id === store.selected);
+  const d = job ? store.decisions[job.id] : null;
+  if (!job || !d) { el.innerHTML = `<p class="empty">Select a job to see its decision.</p>`; return; }
+  const waiting = d.action === "WAIT";
+  const color = waiting ? "var(--lime)" : "var(--good)";
+  el.innerHTML = `<div class="dec">
+    <div class="dec-top">
+      <div style="min-width:0">
+        <div class="dec-name">${esc(job.name)}</div>
+        <div class="dec-meta">${job.id} · ${job.energy} kWh · ${job.duration} min · ${job.workload}</div>
+      </div>
+      <span class="action" style="background:${color};color:${waiting ? "var(--lime-ink)" : "#fff"}">${d.action}</span>
+    </div>
+    <div class="saved">
+      <div class="cap">Carbon saved vs running now</div>
+      <div class="big">
+        <span class="pcnum" style="color:${waiting ? "var(--good)" : "var(--ink-2)"}">${d.carbonSavedPct.toFixed(1)}</span>
+        <span class="pc">%</span><span class="gg">${d.baselineCarbon.toFixed(0)} → ${d.optimalCarbon.toFixed(0)} gCO₂</span>
+      </div>
+      <div class="cost">Cost ${d.costSavedPct >= 0 ? "saved" : "premium"} <b>${Math.abs(d.costSavedPct).toFixed(1)}%</b>
+        · £${d.baselineCost.toFixed(2)} → £${d.optimalCost.toFixed(2)} <span style="color:var(--ink-4)">(modelled)</span></div>
+    </div>
+    <div class="grid2">
+      <div class="stat"><div class="cap">Run at</div><div class="v" style="color:${waiting ? "var(--warning)" : "var(--good)"}">${dayHhmm(d.runAt)}</div></div>
+      <div class="stat"><div class="cap">Window ends</div><div class="v">${dayHhmm(d.windowEnd)}</div></div>
+      <div class="stat"><div class="cap">Deadline</div><div class="v">${dayHhmm(job.deadline)}</div></div>
+      <div class="stat"><div class="cap">Windows searched</div><div class="v">${d.feasible} / ${d.slotsConsidered}</div><div class="s">feasible / slots</div></div>
+    </div>
+    <div><div class="cap">Reason</div><p class="reason">${esc(d.reason)}</p></div>
+    ${job.result ? `<details><summary>Execution result</summary><pre>${esc(JSON.stringify(job.result, null, 2))}</pre></details>` : ""}
+  </div>`;
+}
+
+let heroTarget = 0, heroShown = 0;
+function renderHero() {
+  const t = store.totals();
+  // Banked work is the honest headline once there is any. Before that, lead with
+  // what the current plan will save — labelled as planned, never as done.
+  const showPlanned = t.saved <= 0 && t.planned > 0;
+  heroTarget = showPlanned ? t.planned : t.saved;
+  $("heroCap").textContent = showPlanned ? "CO₂ to be avoided · planned" : "CO₂ avoided this session";
+  $("heroNum").style.color = (t.saved < 0 && !showPlanned) ? "var(--critical)" : "var(--ink)";
+  $("heroSub").textContent = showPlanned
+    ? `across ${t.pendingJobs} scheduled job${t.pendingJobs === 1 ? "" : "s"}, once they run`
+    : (t.naive > 0 ? `${Math.abs(t.pct).toFixed(1)}% ${t.pct < 0 ? "above" : "below"} the run-immediately baseline`
+                   : "Nothing dispatched yet");
+
+  const barNaive = t.naive + t.plannedNaive;
+  const barEco = t.emitted + t.plannedEco;
+  const peak = Math.max(barNaive, 1);
+  $("vsCap").textContent = t.pendingJobs > 0 && t.done > 0
+    ? "Same jobs, same deadlines · done + planned"
+    : (t.pendingJobs > 0 ? "Same jobs, same deadlines · planned" : "Same jobs, same deadlines");
+  $("vsNaive").style.width = `${barNaive / peak * 100}%`;
+  $("vsEco").style.width = `${Math.max(0, barEco) / peak * 100}%`;
+  $("vsNaiveAmt").textContent = barNaive > 0 ? massStr(barNaive) : "—";
+  $("vsEcoAmt").textContent = barNaive > 0 ? massStr(barEco) : "—";
+  if (Math.abs(heroTarget - heroShown) > Math.max(1, Math.abs(heroShown) * 0.02)) {
+    const hn = $("heroNum");
+    hn.classList.remove("kick"); void hn.offsetWidth; hn.classList.add("kick");
+  }
+  const banked = t.naive > 0 ? `<b>${massStr(t.saved)}</b> banked across ${t.done} completed` : "Nothing banked yet";
+  const planned = t.pendingJobs > 0 ? ` · <b style="color:var(--warning)">${massStr(t.planned)}</b> planned across ${t.pendingJobs} waiting` : "";
+  $("vsDelta").innerHTML = banked + planned;
+
+  setText("mWork", `${store.running} / ${MAX_WORKERS}`);
+  $("wTrack").innerHTML = Array.from({ length: MAX_WORKERS },
+    (_, i) => `<span class="wcell${i < store.running ? " on" : ""}"></span>`).join("");
+  setText("mDone", `${t.done} / ${t.total}`);
+  setText("mEnergy", `${Math.round(t.energy * 10) / 10} kWh`);
+}
+
+let tapeSeen = 0;
+function renderTape() {
+  const el = $("tape");
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  const fresh = store.logs.length > tapeSeen ? store.logs.length - tapeSeen : 0;
+  tapeSeen = store.logs.length;
+  $("tapeCount").textContent = `${store.logs.length} lines`;
+  el.innerHTML = store.logs.map((l, i) =>
+    `<div class="row${i >= store.logs.length - fresh ? " fresh" : ""}">` +
+    `<span class="ts">${hhmm(l.v)}:${pad(new Date(l.v).getUTCSeconds())}</span>` +
+    `<span class="lv" style="color:${LEVEL_COLOR[l.level] || LEVEL_COLOR.INFO}">${l.level}</span>` +
+    `<span class="tx">${esc(l.text)}</span></div>`).join("");
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+function renderHeader() {
+  const badge = $("compression");
+  if (clock.speed > 1) {
+    badge.className = "badge live pulse";
+    badge.textContent = `⚠ Time-compressed ${clock.speed}× — demo clock, real workloads`;
+  } else { badge.className = "badge rt"; badge.textContent = "Real time"; }
+  renderSpeeds();
+  const t = store.totals();
+  const headline = t.saved > 0 ? `${massStr(t.saved)} banked` : `${massStr(t.planned)} planned`;
+  $("tabstat").innerHTML = store.jobs.length
+    ? `<b>${headline}</b> · ${t.done}/${t.total} done · ${store.running}/${MAX_WORKERS} workers`
+    : "";
+}
+
+/* Only the visible view is drawn: a hidden element has zero width, and a chart
+   sized against that comes out blank when the tab is opened. */
+function render() {
+  renderHeader();
+  const tip = $("tipbox");
+  if (view === "overview") {
+    renderHero();
+    if (tip) $("boxOv").appendChild(tip);
+    drawForecast("chartOv", "boxOv", 330, true);
+    flow.active = "flowOv";
+  } else if (view === "jobs") {
+    flow.active = null;
+    renderQueue(); renderDecision();
+  } else if (view === "grid") {
+    if (tip) $("boxGrid").appendChild(tip);
+    drawForecast("chartGrid", "boxGrid", 264, false);
+    renderRibbon(); renderStrip(); renderSlots();
+    flow.active = "flowGrid";
+  } else if (view === "activity") {
+    flow.active = null;
+    renderCum(); renderTape();
+  }
+  justSwitched = false;
+}
+
+function frame() {
+  const vnow = clock.now();
+  $("clock").textContent = dayHhmm(vnow);
+  const cur = buildSlot(floorToSlot(vnow));
+  setText("liveI", cur.intensity.toFixed(0));
+
+  if (chartGeom) {
+    const g = document.getElementById("nowg");
+    if (g) {
+      g.setAttribute("transform", `translate(${(chartGeom.X(vnow) - Number(g.dataset.x)).toFixed(2)},0)`);
+      const y = chartGeom.Y(cur.intensity);
+      const pt = document.getElementById("nowpt"), gl = document.getElementById("nowglow");
+      if (pt) pt.setAttribute("cy", y.toFixed(1));
+      if (gl) gl.setAttribute("cy", y.toFixed(1));
+    }
+    for (const id of ["stripnow", "ribnow"]) {
+      const n = document.getElementById(id);
+      if (n) n.setAttribute("transform", `translate(${(chartGeom.X(vnow) - Number(n.dataset.x)).toFixed(2)},0)`);
+    }
+  }
+
+  if (Math.abs(heroShown - heroTarget) > 0.01) {
+    heroShown += (heroTarget - heroShown) * 0.12;
+    if (Math.abs(heroShown - heroTarget) < 0.05) heroShown = heroTarget;
+    const [v, u] = mass(heroShown);
+    $("heroNum").textContent = v; $("heroUnit").textContent = u;
+  }
+
+  for (const el of document.querySelectorAll("[data-prog]")) {
+    const j = store.jobs.find((x) => x.id === el.dataset.prog);
+    if (j) el.style.width = `${Math.round(j.progress * 100)}%`;
+  }
+  renderPulsebar(cur.intensity);
+  renderCountdown(vnow);
+  bgfx.render(performance.now(), cur.intensity);
+  flow.render(performance.now());
+  requestAnimationFrame(frame);
+}
+
+/* ---------------- events ---------------------------------------------------- */
+$("tabs").addEventListener("click", (e) => {
+  const b = e.target.closest(".tab");
+  if (b) setView(b.dataset.view);
+});
+$("speeds").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-speed]");
+  if (!b) return;
+  b.classList.remove("zap"); void b.offsetWidth; b.classList.add("zap");
+  setSpeed(Number(b.dataset.speed));
+});
+function setSpeed(s) {
+  clock.setSpeed(s);
+  store.log(`TIME COMPRESSION ${s}× — clock and grid feed only; workloads still run at real speed`, "INFO");
+  render();
+}
+function stepSpeed(dir) {
+  const i = SPEEDS.indexOf(clock.speed);
+  const next = SPEEDS[Math.min(SPEEDS.length - 1, Math.max(0, i + dir))];
+  if (next !== clock.speed) setSpeed(next);
+}
+
+document.querySelector(".scen").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-scen]");
+  if (!b) return;
+  b.classList.remove("zap"); void b.offsetWidth; b.classList.add("zap");
+  loadScenario(b.dataset.scen);
+});
+$("reset").addEventListener("click", () => { resetAll(); render(); });
+
+$("copy").addEventListener("click", async () => {
+  const t = store.totals();
+  const lines = [
+    "ECO-ARB session summary",
+    `Grid clock ${iso(clock.now())} · compression ${clock.speed}x · modelled UK curve`, "",
+    `Jobs           ${t.done} completed of ${t.total}`,
+    `Energy         ${Math.round(t.energy * 10) / 10} kWh scheduled`,
+    `Run-now would  ${massStr(t.naive)} CO2`,
+    `ECO-ARB did    ${massStr(t.emitted)} CO2`,
+    `Avoided        ${massStr(t.saved)} (${t.pct.toFixed(1)}%)`,
+    `Still planned  ${massStr(t.planned)} across ${t.pendingJobs} waiting jobs`,
+    `Cost saved     GBP ${t.savedCost.toFixed(2)} (modelled)`, "",
+    "Carbon is the only optimisation target; cost never breaks a tie.",
+    "Renewable share is derived from intensity; price is modelled.",
+    "github.com/krishiyswim23-swagger/ECO---ARB",
+  ].join("\n");
+  try {
+    await navigator.clipboard.writeText(lines);
+    store.log("Session summary copied to clipboard", "OK");
+  } catch {
+    store.log("Clipboard blocked by the browser — summary written to the tape instead", "WARN");
+    for (const l of lines.split("\n")) if (l.trim()) store.log(l, "INFO");
+  }
+  render();
+});
+
+const keysPanel = $("keys");
+const toggleKeys = () => { keysPanel.hidden = !keysPanel.hidden; };
+$("help").addEventListener("click", toggleKeys);
+keysPanel.addEventListener("click", (e) => { if (e.target === keysPanel) toggleKeys(); });
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !keysPanel.hidden) { toggleKeys(); return; }
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+  const k = e.key.toLowerCase();
+  if (["1", "2", "3", "4"].includes(k)) setView(VIEWS[Number(k) - 1]);
+  else if (k === "[") stepSpeed(-1);
+  else if (k === "]") stepSpeed(1);
+  else if (k === "s") loadScenario("nightly");
+  else if (k === "f") loadScenario("ci");
+  else if (k === "t") loadScenario("farm");
+  else if (k === "r") { resetAll(); render(); }
+  else if (k === "c") $("copy").click();
+  else if (k === "?" || (e.shiftKey && k === "/")) toggleKeys();
+  else if (k === "/") {
+    setView("jobs");
+    const b = $("nlText");
+    if (b && !$("nlpanel").hidden) { e.preventDefault(); b.focus(); }
+  }
+});
+
+$("qwrap").addEventListener("click", (e) => {
+  const cancel = e.target.closest("button[data-cancel]");
+  if (cancel) {
+    const id = cancel.dataset.cancel;
+    const j = store.jobs.find((x) => x.id === id);
+    store.jobs = store.jobs.filter((x) => x.id !== id);
+    delete store.decisions[id];
+    if (store.selected === id) store.selected = null;
+    store.log(`${id} CANCELLED '${j ? j.name : id}'`, "WARN");
+    pickSelection(); render();
+    return;
+  }
+  const row = e.target.closest("tr[data-id]");
+  if (row) { store.selected = row.dataset.id; render(); }
+});
+$("qwrap").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const row = e.target.closest("tr[data-id]");
+  if (row) { e.preventDefault(); store.selected = row.dataset.id; render(); }
+});
+
+$("form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const err = $("formErr");
+  const energy = Number($("f-kwh").value), duration = Number($("f-dur").value), dl = Number($("f-dl").value);
+  if (!(energy > 0) || !(duration > 0) || !(dl > 0)) {
+    err.hidden = false;
+    err.textContent = "Energy, duration and deadline must all be greater than zero.";
+    return;
+  }
+  err.hidden = true;
+  createJob({ name: $("f-name").value.trim() || "unnamed-job", energy, duration, deadlineHours: dl, workload: "hash_grind" });
+  pickSelection(); render();
+});
+
+for (const boxId of ["boxOv", "boxGrid"]) {
+  const box = $(boxId);
+  box.addEventListener("mousemove", (e) => {
+    const svg = box.querySelector("svg");
+    const r = svg.getBoundingClientRect();
+    const w = Math.max(320, box.clientWidth - 12);
+    const px = (e.clientX - r.left) * (w / r.width);
+    const iw = Math.max(10, w - M.left - M.right);
+    if (px < M.left || px > M.left + iw) { if (hoverIdx !== null) { hoverIdx = null; render(); } return; }
+    const idx = Math.min(47, Math.max(0, Math.floor((px - M.left) / iw * 48)));
+    if (idx !== hoverIdx) { hoverIdx = idx; render(); }
+  });
+  box.addEventListener("mouseleave", () => { if (hoverIdx !== null) { hoverIdx = null; render(); } });
+}
+
+let rt;
+window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { render(); moveInk(); }, 120); });
+
+/* ---------------- natural-language intake ----------------------------------
+   Claude turns a sentence into the four fields the engine needs. It does NOT
+   make the scheduling decision — the exhaustive sliding window still does that,
+   deterministically. The LLM is the front door, not the brain. */
+const NL_SHAPE = '{"name": string, "energy_kwh": number, "duration_minutes": number, "deadline_hours": number}';
+const NL_ERRORS = {
+  rate_limited: "Too many requests just now. Give it a moment, or use the form below.",
+  session_expired: "Your Claude session expired — sign in again, or use the form below.",
+  refused: "Claude declined that one. Try rephrasing it.",
+  invalid_json: "Couldn't read that as a job. Name the energy, how long it runs, and when it's due.",
+  empty_completion: "No answer came back. Try rephrasing it.",
+  prompt_too_large: "That's too long — a sentence or two is plenty.",
+};
+const HIDE_CODES = ["not_granted", "sampling_disabled", "not_declared", "capability_disabled", "capability_removed"];
+
+function applyParsedJob(v) {
+  const name = String(v?.name ?? "").trim().slice(0, 60) || "untitled-job";
+  const energy = Number(v?.energy_kwh), duration = Number(v?.duration_minutes);
+  let deadlineHours = Number(v?.deadline_hours);
+  if (!(energy > 0) || !(duration > 0)) throw new Error("missing energy or duration");
+  if (!(deadlineHours > 0)) deadlineHours = HORIZON_H;
+  deadlineHours = Math.min(deadlineHours, HORIZON_H);
+  const minHours = duration / 60;
+  if (deadlineHours < minHours) deadlineHours = Math.min(minHours * 1.1, HORIZON_H);
+  return createJob({ name, energy, duration, deadlineHours, workload: "hash_grind" });
+}
+
+(async function initNL() {
+  // window.claude, not a bare `claude`: outside a Claude viewer the identifier is
+  // undeclared and a bare reference throws ReferenceError instead of resolving.
+  const sample = await Promise.resolve(window.claude?.use?.("sample")).catch(() => null);
+  if (!sample) return;
+  const panel = $("nlpanel"), box = $("nlText"), go = $("nlGo"), stop = $("nlStop"), status = $("nlStatus");
+  panel.hidden = false;
+  panel.addEventListener("click", (e) => {
+    const ex = e.target.closest("button[data-ex]");
+    if (ex) { box.value = ex.dataset.ex; box.focus(); }
+  });
+  let ctl = null;
+  stop.addEventListener("click", () => ctl?.abort());
+
+  go.addEventListener("click", async () => {
+    const text = box.value.trim();
+    if (!text) { box.focus(); return; }
+    ctl = new AbortController();
+    go.disabled = true; stop.hidden = false;
+    status.className = "nl-status"; status.textContent = "Reading that…";
+    const prompt =
+      "You turn a plain-English compute request into scheduling fields for a carbon-aware job scheduler.\n" +
+      `The scheduler's current time is ${iso(clock.now())} (UTC). The scheduling horizon is ${HORIZON_H} hours.\n\n` +
+      "Reply with ONLY a JSON object of this shape, no other text:\n" + NL_SHAPE + "\n\n" +
+      "Rules:\n" +
+      "- name: a short kebab-case job name from the description, e.g. \"nightly-model-retrain\".\n" +
+      "- energy_kwh: energy in kilowatt-hours. If not stated, estimate from the work described (small batch 2-8, heavy training 30-60).\n" +
+      "- duration_minutes: how long it runs. If not stated, estimate.\n" +
+      `- deadline_hours: hours FROM NOW until it must finish, between 0.25 and ${HORIZON_H}. Convert any clock time ("by 9am", "tonight") into hours from the current time above. If none is stated, use ${HORIZON_H}.\n\n` +
+      "Request:\n" + text;
+    try {
+      const parsed = await sample.json(prompt, { modelTier: "quick", cache: false, signal: ctl.signal });
+      const job = applyParsedJob(parsed);
+      const d = store.decisions[job.id];
+      status.textContent = `${job.id} · ${job.energy} kWh · ${job.duration} min · due ${dayHhmm(job.deadline)}` +
+        (d ? ` → ${d.action}${d.action === "WAIT" ? ` (−${d.carbonSavedPct.toFixed(0)}% CO₂)` : ""}` : "");
+      box.value = "";
+      pickSelection(); render();
+    } catch (e) {
+      const code = e?.code ?? "upstream_error";
+      if (HIDE_CODES.includes(code)) { panel.hidden = true; return; }
+      status.className = code === "cancelled" ? "nl-status" : "nl-status bad";
+      status.textContent = NL_ERRORS[code] ?? (code === "cancelled" ? "Stopped." : "That didn't go through. Try again, or use the form below.");
+    } finally { go.disabled = false; stop.hidden = true; ctl = null; }
+  });
+  box.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); go.click(); }
+  });
+})();
+
+/* ---------------- the felt layer -------------------------------------------
+   Every moving thing here is driven by real scheduler state: particle density
+   and colour track live carbon intensity, shockwaves fire on actual dispatches,
+   the bar across the top is the grid's current intensity. Nothing loops for
+   decoration. */
+const REDUCED = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+function isDark() {
+  const t = document.documentElement.getAttribute("data-theme");
+  if (t === "dark") return true;
+  if (t === "light") return false;
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+}
+
+/** Clean → dirty as green → amber → red. Deeper steps on paper, brighter on
+    ink, so the same reading survives either ground. */
+const RAMP_LIGHT = [[11, 138, 95], [184, 110, 0], [217, 48, 37]];
+const RAMP_DARK  = [[23, 160, 109], [224, 160, 42], [240, 86, 74]];
+function intensityColor(v, alpha = 1) {
+  const R = isDark() ? RAMP_DARK : RAMP_LIGHT;
+  const f = Math.min(1, Math.max(0, (v - 120) / 200));
+  const i = f < 0.5 ? 0 : 1, k = f < 0.5 ? f / 0.5 : (f - 0.5) / 0.5;
+  const a = R[i], b = R[i + 1];
+  return `rgba(${(a[0] + k * (b[0] - a[0])) | 0},${(a[1] + k * (b[1] - a[1])) | 0},${(a[2] + k * (b[2] - a[2])) | 0},${alpha})`;
+}
+
+const flow = {
+  active: null, particles: [], ripples: [], last: 0,
+  ensure(id) {
+    const c = document.getElementById(id);
+    if (!c || !chartGeom) return null;
+    const box = document.getElementById(chartGeom.box);
+    const w = Math.max(10, box.clientWidth), h = chartGeom.height;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (c.width !== (w * dpr | 0) || c.height !== (h * dpr | 0)) {
+      c.width = w * dpr | 0; c.height = h * dpr | 0; c.style.height = h + "px";
+    }
+    const ctx = c.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, w, h };
+  },
+  seed(n = 130) {
+    this.particles = Array.from({ length: n }, () => ({
+      p: Math.random(), off: (Math.random() - 0.5) * 34, sp: 0.02 + Math.random() * 0.05,
+      sz: 0.8 + Math.random() * 1.8, ph: Math.random() * 6.28,
+    }));
+  },
+  ripple() {
+    if (!chartGeom || REDUCED) return;
+    this.ripples.push({ x: chartGeom.X(clock.now()), y: chartGeom.top + chartGeom.ih / 2, born: performance.now() });
+    if (this.ripples.length > 6) this.ripples.shift();
+  },
+  render(nowMs) {
+    if (!this.active || !chartGeom || REDUCED) return;
+    const g = this.ensure(this.active);
+    if (!g) return;
+    const { ctx, w, h } = g;
+    const dt = Math.min(0.05, (nowMs - this.last) / 1000 || 0.016);
+    this.last = nowMs;
+    ctx.clearRect(0, 0, w, h);
+    const dark = isDark();
+    const { X, Y, t0, t1, left, iw } = chartGeom;
+
+    ctx.globalCompositeOperation = dark ? "lighter" : "source-over";
+    for (const q of this.particles) {
+      const t = t0 + q.p * (t1 - t0);
+      const inten = buildSlot(floorToSlot(t)).intensity;
+      const agit = Math.min(1, Math.max(0, (inten - 120) / 200));
+      q.p += (q.sp * (0.35 + agit * 1.5)) * dt;
+      if (q.p > 1) q.p -= 1;
+      const x = left + q.p * iw;
+      const wob = Math.sin(nowMs / 700 + q.ph) * (4 + agit * 12);
+      const y = Y(inten) + q.off * (0.5 + agit) + wob;
+      ctx.fillStyle = intensityColor(inten, (dark ? 0.22 : 0.3) + agit * 0.4);
+      ctx.beginPath();
+      ctx.arc(x, y, q.sz * (0.8 + agit * 0.9), 0, 6.2832);
+      ctx.fill();
+    }
+
+    for (let i = this.ripples.length - 1; i >= 0; i--) {
+      const r = this.ripples[i];
+      const age = (nowMs - r.born) / 1000;
+      if (age > 1.5) { this.ripples.splice(i, 1); continue; }
+      const k = age / 1.5;
+      ctx.strokeStyle = dark ? `rgba(92,143,255,${(1 - k) * 0.55})` : `rgba(42,91,215,${(1 - k) * 0.5})`;
+      ctx.lineWidth = 2.5 * (1 - k) + 0.4;
+      ctx.beginPath(); ctx.arc(r.x, r.y, 14 + k * 260, 0, 6.2832); ctx.stroke();
+    }
+    ctx.globalCompositeOperation = "source-over";
+  },
+};
+flow.seed();
+
+/** The grid's pulse across the very top of the screen. */
+function renderPulsebar(intensity) {
+  const el = document.getElementById("pulsebar");
+  if (el) el.style.background = intensityColor(intensity, 1);
+}
+
+/** Virtual time until the next planned dispatch — the thing worth waiting for. */
+function renderCountdown(vnow) {
+  const wrap = document.getElementById("cdWrap");
+  if (!wrap) return;
+  let best = null, bestJob = null;
+  for (const j of store.jobs) {
+    if (j.status !== "WAITING" || !j.runAt) continue;
+    if (best === null || j.runAt < best) { best = j.runAt; bestJob = j; }
+  }
+  if (best === null || best <= vnow) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  const secs = Math.max(0, (best - vnow) / 1000);
+  const el = document.getElementById("cd");
+  el.textContent = `${pad(Math.floor(secs / 3600))}:${pad(Math.floor(secs % 3600 / 60))}:${pad(Math.floor(secs % 60))}`;
+  el.classList.toggle("imminent", secs < 900);
+  document.getElementById("cdName").textContent = bestJob ? `· ${bestJob.name}` : "";
+}
+
+
+/* ---------------- background field -----------------------------------------
+   A full-page blueprint that answers to the grid: the mesh drifts, charge
+   flows along it, and a scan sweeps through. Speed, density and tint all come
+   from live carbon intensity, so the backdrop is a reading, not wallpaper. */
+const bgfx = {
+  c: null, ctx: null, w: 0, h: 0, dpr: 1, dots: [], lastScan: 0,
+  init() {
+    this.c = document.getElementById("bgfx");
+    if (!this.c) return;
+    this.ctx = this.c.getContext("2d");
+    this.resize();
+    this.dots = Array.from({ length: 90 }, () => ({
+      x: Math.random(), y: Math.random(),
+      vx: 0.2 + Math.random() * 0.5, vy: (Math.random() - 0.5) * 0.28,
+      r: 0.7 + Math.random() * 1.9, ph: Math.random() * 6.28,
+    }));
+    addEventListener("resize", () => this.resize());
+  },
+  resize() {
+    if (!this.c) return;
+    this.dpr = Math.min(1.5, window.devicePixelRatio || 1);
+    this.w = innerWidth; this.h = innerHeight;
+    this.c.width = this.w * this.dpr | 0;
+    this.c.height = this.h * this.dpr | 0;
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+  },
+  render(ms, intensity) {
+    if (!this.ctx || REDUCED) return;
+    const { ctx, w, h } = this;
+    const dark = isDark();
+    const agit = Math.min(1, Math.max(0, (intensity - 120) / 200));
+    ctx.clearRect(0, 0, w, h);
+
+    // drifting mesh
+    const gap = 46, drift = (ms / 1000 * (5 + agit * 16)) % gap;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = dark ? `rgba(246,246,240,${0.035 + agit * 0.02})` : `rgba(17,17,16,${0.045 + agit * 0.025})`;
+    ctx.beginPath();
+    for (let x = -gap + drift; x < w + gap; x += gap) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+    for (let y = -gap + drift * 0.6; y < h + gap; y += gap) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+    ctx.stroke();
+
+    // charge flowing along it
+    for (const d of this.dots) {
+      d.x += (d.vx * (0.15 + agit * 0.85)) * 0.0016;
+      d.y += d.vy * 0.0016;
+      if (d.x > 1.05) d.x = -0.05;
+      if (d.y > 1.05) d.y = -0.05; else if (d.y < -0.05) d.y = 1.05;
+      const px = d.x * w, py = d.y * h + Math.sin(ms / 1400 + d.ph) * 9;
+      ctx.fillStyle = intensityColor(intensity, (dark ? 0.16 : 0.13) + agit * 0.16);
+      ctx.beginPath();
+      ctx.arc(px, py, d.r * (0.9 + agit * 0.7), 0, 6.2832);
+      ctx.fill();
+    }
+
+    // a slow scan, every ~9s
+    const period = 9000, phase = (ms % period) / period;
+    if (phase < 0.42) {
+      const y = phase / 0.42 * (h + 260) - 130;
+      const g = ctx.createLinearGradient(0, y - 130, 0, y + 130);
+      const tint = dark ? "194,240,0" : "143,175,0";
+      g.addColorStop(0, `rgba(${tint},0)`);
+      g.addColorStop(0.5, `rgba(${tint},${dark ? 0.07 : 0.06})`);
+      g.addColorStop(1, `rgba(${tint},0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, y - 130, w, 260);
+    }
+  },
+};
+
+/** Write a value and give it a beat when it actually changed. */
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const next = String(value);
+  if (el.textContent === next) return;
+  el.textContent = next;
+  el.classList.remove("bumped"); void el.offsetWidth; el.classList.add("bumped");
+}
+
+/* ---------------- boot ------------------------------------------------------ */
+const tipEl = document.createElement("div");
+tipEl.className = "tip"; tipEl.id = "tipbox"; tipEl.hidden = true;
+$("boxOv").appendChild(tipEl);
+
+const BOOT = [
+  "grid feed ......... modelled UK curve",
+  "decision engine ... exhaustive sliding window, 48 slots",
+  "executor .......... SHA-256, real CPU",
+  `workers ........... ${MAX_WORKERS}`,
+  "clock ............. compression armed",
+];
+(function boot() {
+  const el = $("bootlines");
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  let i = 0;
+  const step = () => {
+    if (i < BOOT.length) {
+      el.insertAdjacentHTML("beforeend", `<div><span class="ok">ok</span> ${BOOT[i]}</div>`);
+      i += 1;
+      setTimeout(step, reduced ? 0 : 110);
+    } else setTimeout(start, reduced ? 0 : 200);
+  };
+  step();
+})();
+
+function start() {
+  const b = $("boot");
+  b.classList.add("out");
+  setTimeout(() => b.remove(), 320);
+  bgfx.init();
+  store.log("ECO-ARB online. Grid feed: modelled UK curve (sandbox blocks outbound API calls).", "OK");
+  loadScenario("nightly");
+  render();
+  moveInk();
+  requestAnimationFrame(frame);
+  setInterval(() => {
+    tick(); render();
+    const d = $("beat");
+    d.classList.remove("beat"); void d.offsetWidth; d.classList.add("beat");
+  }, 1000);
+}
+</script>

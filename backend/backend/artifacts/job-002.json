@@ -1,0 +1,15 @@
+{
+  "job_id": "job-002",
+  "name": "renewable-scenario-matrix",
+  "energy_kwh": 12.0,
+  "deadline_iso": "2026-09-19T07:06:43Z",
+  "run_at_iso": "2026-09-19T01:46:30Z",
+  "result": {
+    "workload": "matrix_train",
+    "matrix_n": 394,
+    "passes": 3,
+    "flops_approx": 366977904,
+    "checksum": 29977414.766847,
+    "real_seconds": 8.39
+  }
+}

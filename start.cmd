@@ -18,7 +18,10 @@ if errorlevel 1 goto failed
 call npm.cmd run build --prefix frontend
 if errorlevel 1 goto failed
 :launch
+<<<<<<< HEAD
 set ECO_ARB_DEMO_MODE=scenario
+=======
+>>>>>>> 2d0ad55 (Complete self-contained climate scheduling demo)
 echo.
 echo Open http://127.0.0.1:8000 in your browser after Application startup complete.
 echo Keep this window open. Press Ctrl+C to stop the server.
