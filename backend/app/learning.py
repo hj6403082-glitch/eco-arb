@@ -12,6 +12,7 @@ from datetime import timedelta
 
 import httpx
 
+from .fsutil import write_json_atomic
 from .clock import iso, parse_iso, real_now
 
 
@@ -116,9 +117,8 @@ class LearnedForecast:
         with self.lock:
             if self.path:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
-                temp = self.path.with_suffix(".tmp")
-                temp.write_text(json.dumps({"coefficients": final_weights, "report": report}), encoding="utf-8")
-                temp.replace(self.path)
+                write_json_atomic(self.path, {"coefficients": final_weights, "report": report},
+                                  label="trained model")
             self.coefficients, self.report = final_weights, report
         return self.status()
 

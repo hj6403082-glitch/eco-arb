@@ -10,6 +10,7 @@ from typing import Deque, Dict, List, Optional
 
 from . import config
 from .clock import clock, iso, real_now
+from .fsutil import write_json_atomic
 from .models import Decision, Job, LogLine
 
 
@@ -56,10 +57,7 @@ class Store:
                     "logs": [v.model_dump() for v in self.logs]}
             for key in ("baselines", "baseline_costs", "actual_carbon", "actual_cost"):
                 data[key] = getattr(self, key)
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(data), encoding="utf-8")
-            temporary.replace(self.path)
+            write_json_atomic(self.path, data, label="session state")
 
     def next_id(self) -> str:
         with self.lock:

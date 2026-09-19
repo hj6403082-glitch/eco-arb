@@ -14,6 +14,7 @@ from datetime import timedelta
 import httpx
 
 from .carbon import feed, floor_to_slot, derive_renewable_pct, model_price
+from .fsutil import write_json_atomic
 from .clock import iso, parse_iso, real_now
 from .engine import decide, score_window
 from .learning import learned
@@ -108,9 +109,10 @@ class RegionRegistry:
             self.errors.pop(region, None)
             if self.path:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
-                temp = self.path.with_suffix(".tmp")
-                temp.write_text(json.dumps({"rows": {k: [r.model_dump() for r in v] for k, v in self.rows.items()}, "sources": self.sources}), encoding="utf-8")
-                temp.replace(self.path)
+                write_json_atomic(self.path,
+                                  {"rows": {k: [r.model_dump() for r in v] for k, v in self.rows.items()},
+                                   "sources": self.sources},
+                                  label="imported region forecasts")
 
     def scenario(self, key, now):
         first = floor_to_slot(now)

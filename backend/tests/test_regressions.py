@@ -220,3 +220,62 @@ def test_pinned_job_keeps_its_window_when_the_scheduler_replans():
               run_at_iso=iso(now + timedelta(hours=3)), status="WAITING")
     assert job.pinned is True
     assert job.run_at_iso == iso(now + timedelta(hours=3))
+
+
+# --- persistence must never take the app down -------------------------------
+
+def test_checkpoint_survives_a_locked_target(tmp_path, monkeypatch):
+    """Windows raises PermissionError when anything holds the target file.
+
+    OneDrive watches C:/Users/<name>/Documents by default, so this fired during
+    a live demo and 500'd job creation. A checkpoint is a convenience; losing one
+    must never fail the request that triggered it.
+    """
+    import os
+    from app.fsutil import write_json_atomic
+
+    target = tmp_path / "state.json"
+    assert write_json_atomic(target, {"v": 1}, label="test") is True
+
+    def always_locked(src, dst):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(os, "replace", always_locked)
+    assert write_json_atomic(target, {"v": 2}, label="test") is False
+    assert target.read_text() == '{"v": 1}'          # previous state left intact
+    assert not (tmp_path / "state.tmp").exists()      # no litter
+
+
+def test_checkpoint_retries_a_transient_lock(tmp_path, monkeypatch):
+    import os
+    from app.fsutil import write_json_atomic
+
+    target = tmp_path / "state.json"
+    real, attempts = os.replace, {"n": 0}
+
+    def flaky(src, dst):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise PermissionError(5, "Access is denied")
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky)
+    assert write_json_atomic(target, {"v": 9}, label="test") is True
+    assert attempts["n"] == 3
+    assert target.read_text() == '{"v": 9}'
+
+
+def test_job_creation_succeeds_when_the_state_file_cannot_be_written(monkeypatch):
+    """The original failure: create_job 500'd because checkpoint raised."""
+    import os
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    monkeypatch.setattr(os, "replace", lambda src, dst: (_ for _ in ()).throw(
+        PermissionError(5, "Access is denied")))
+    with TestClient(app) as client:
+        response = client.post("/api/jobs", json={
+            "name": "locked-disk-job", "energy_kwh": 1,
+            "duration_minutes": 30, "deadline_hours": 6})
+    assert response.status_code == 200, response.text
+    assert response.json()["job"]["name"] == "locked-disk-job"
