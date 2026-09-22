@@ -92,7 +92,7 @@ class RegionRegistry:
         with ThreadPoolExecutor(max_workers=4) as pool:
             list(pool.map(fetch_region, [k for k in REGIONS if k != "gb"]))
 
-    def ingest(self, region, rows, source, imported=True):
+    def ingest(self, region, rows, source, imported=True, source_kind=None):
         if region not in REGIONS or len(rows) < 2:
             raise ValueError("A supported region and at least two rows are required")
         normalized = sorted(rows, key=lambda r: parse_iso(r.timestamp))
@@ -103,8 +103,9 @@ class RegionRegistry:
             if i and stamp - parse_iso(normalized[i-1].timestamp) != timedelta(minutes=30):
                 raise ValueError("Forecast must have consecutive half-hour rows, without duplicates or gaps")
         with self.lock:
-            self.rows[region] = [r.model_copy(update={"live": not imported,
-                                "source_kind": "imported" if imported else "provider_forecast"}) for r in normalized]
+            kind = source_kind or ("imported" if imported else "provider_forecast")
+            self.rows[region] = [r.model_copy(update={"live": not imported, "source_kind": kind})
+                                 for r in normalized]
             self.sources[region] = source
             self.errors.pop(region, None)
             if self.path:

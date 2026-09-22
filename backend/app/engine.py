@@ -261,6 +261,22 @@ def recommend(
     # breakpoints are worse than the status quo; presenting those as
     # "recommendations" would be actively misleading.
     ceiling = run_now["carbon_g"] if run_now else None
+
+    # An imported or regional forecast can start after "now", leaving no window
+    # to run immediately in. Savings are then undefined rather than zero, so
+    # rank on absolute carbon and separate options by that instead -- otherwise
+    # every row reads "0.0% saved" and the distinctness filter collapses the
+    # list to one meaningless entry.
+    # "Running now" is the baseline. Without a feasible window at `now` there
+    # is nothing to compare against.
+    has_baseline = bool(run_now) and run_now["carbon_g"] > 0
+    best_carbon = min((r["carbon_g"] for r in feasible), default=0.0) or 1.0
+
+    def too_close(row, chosen) -> bool:
+        if has_baseline:
+            return abs(row["carbon_saved_pct"] - chosen["carbon_saved_pct"]) < min_gap_pct
+        return abs(row["carbon_g"] - chosen["carbon_g"]) < best_carbon * min_gap_pct / 100.0
+
     picked: List[dict] = []
     for row in sorted(feasible, key=lambda r: r["carbon_g"]):
         if row["breakpoint"] == "now":
@@ -270,7 +286,7 @@ def recommend(
         start = parse_iso(row["start_iso"])
         if any(
             abs((start - parse_iso(p["start_iso"])).total_seconds()) < spacing_minutes * 60
-            or abs(row["carbon_saved_pct"] - p["carbon_saved_pct"]) < min_gap_pct
+            or too_close(row, p)
             for p in picked
         ):
             continue
@@ -288,9 +304,15 @@ def recommend(
     if run_now:
         options.append({**run_now, "label": "Run immediately, no deferral", "recommended": not picked})
 
+    if not has_baseline:
+        for option in options:
+            option["carbon_saved_pct"] = None
+            option["cost_saved_pct"] = None
+
     return {
         "options": options,
         "trace": trace,
+        "baseline_available": has_baseline,
         "candidates_considered": len(trace),
         "feasible_windows": len(feasible),
         "baseline_carbon_g": run_now["carbon_g"] if run_now else None,

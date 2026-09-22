@@ -10,11 +10,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config, scheduler as sched
-from .carbon import feed
+from .carbon import feed, model_price
 from .clock import clock, iso, parse_iso, real_now
 from .engine import decide, decision_for_window, recommend
 from .executor import ARTIFACT_DIR, WORKLOADS, verify_hash_grind
-from .models import Job, JobCreate, SpeedSet, ModelTraining, ForecastImport
+from .emissions import EMISSION_FACTORS, FACTOR_BASIS, intensity_from_mix, unknown_fuels
+from .models import ForecastImport, GenerationMixImport, Grid, Job, JobCreate, ModelTraining, SpeedSet
 from .store import store
 from .regions import registry, REGIONS
 from .learning import learned, synthetic_history
@@ -349,6 +350,48 @@ def import_forecast(payload: ForecastImport):
         raise HTTPException(422, str(exc)) from exc
     return {"imported": len(payload.rows), "region": payload.region,
             "basis": "operator-supplied forecast; provider authenticity is not verified"}
+
+
+@app.post("/api/regions/import-mix")
+def import_generation_mix(payload: GenerationMixImport):
+    """Import generation by fuel and derive the intensity from it.
+
+    India publishes MW per fuel, not gCO2/kWh, so this is the path a real CEA or
+    Grid-India export takes. Renewable share here is measured from the mix rather
+    than back-calculated from intensity, which makes it better provenance than
+    the UK national feed.
+    """
+    derived, flagged = [], set()
+    for row in payload.rows:
+        try:
+            intensity, renewable, _ = intensity_from_mix(row.mix)
+        except ValueError as exc:
+            raise HTTPException(422, f"{row.timestamp}: {exc}") from exc
+        flagged.update(unknown_fuels(row.mix))
+        derived.append(Grid(timestamp=row.timestamp, intensity_gco2_kwh=intensity,
+                            renewable_pct=renewable,
+                            price=model_price(intensity, parse_iso(row.timestamp)),
+                            live=False, source_kind="derived_from_generation_mix",
+                            renewable_basis="measured from the supplied generation mix"))
+    try:
+        if max(parse_iso(r.timestamp) for r in derived) <= clock.now():
+            raise ValueError("Import must include future forecast intervals")
+        registry.ingest(payload.region, derived, payload.source_name,
+                        source_kind="derived_from_generation_mix")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"imported": len(derived), "region": payload.region,
+            "intensity_basis": f"derived from the supplied generation mix using published factors ({FACTOR_BASIS})",
+            "renewable_basis": "measured from the supplied generation mix",
+            "unrecognised_fuels": sorted(flagged),
+            "note": "Operator-supplied generation; provider authenticity is not verified."}
+
+
+@app.get("/api/emission-factors")
+def emission_factors():
+    """The factors used to derive intensity, so the arithmetic is inspectable."""
+    return {"basis": FACTOR_BASIS, "unit": "gCO2 per kWh generated",
+            "factors": EMISSION_FACTORS}
 
 
 @app.post("/api/model/train")

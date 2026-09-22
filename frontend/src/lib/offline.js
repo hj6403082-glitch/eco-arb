@@ -168,14 +168,21 @@ function rankWindows(job, slots, nowMs, limit = 4, spacingMinutes = 20, minGapPc
   const feasible = trace.filter((r) => r.feasible);
   const runNow = trace.find((r) => r.breakpoint === "now" && r.feasible) || null;
   const ceiling = runNow ? runNow.carbon_g : null;
+  // Without a feasible window at "now" there is no baseline, so savings are
+  // undefined rather than zero: rank on absolute carbon and separate options by
+  // that, or every row reads "0.0%" and the list collapses to one entry.
+  const hasBaseline = Boolean(runNow) && runNow.carbon_g > 0;
+  const bestCarbon = feasible.length ? Math.min(...feasible.map((r) => r.carbon_g)) || 1 : 1;
+  const tooClose = (row, chosen) => hasBaseline
+    ? Math.abs(row.carbon_saved_pct - chosen.carbon_saved_pct) < minGapPct
+    : Math.abs(row.carbon_g - chosen.carbon_g) < (bestCarbon * minGapPct) / 100;
   const picked = [];
   for (const row of [...feasible].sort((a, b) => a.carbon_g - b.carbon_g)) {
     if (row.breakpoint === "now") continue;
     if (ceiling != null && row.carbon_g >= ceiling - 1e-9) continue;
     const start = Date.parse(row.start_iso);
-    // Distinct in time AND in outcome: two rows both reading "-30.7%" are noise.
     if (picked.some((p) => Math.abs(start - Date.parse(p.start_iso)) < spacingMinutes * 60000
-        || Math.abs(row.carbon_saved_pct - p.carbon_saved_pct) < minGapPct)) continue;
+        || tooClose(row, p))) continue;
     picked.push(row);
     if (picked.length >= limit - 1) break;
   }
@@ -184,7 +191,9 @@ function rankWindows(job, slots, nowMs, limit = 4, spacingMinutes = 20, minGapPc
       : (Date.parse(row.start_iso) < Date.parse(picked[0].start_iso)
           ? "Near-optimal, earlier" : "Near-optimal alternative") }));
   if (runNow) options.push({ ...runNow, label: "Run immediately, no deferral", recommended: !picked.length });
-  return { options, trace, candidates_considered: trace.length, feasible_windows: feasible.length,
+  if (!hasBaseline) for (const o of options) { o.carbon_saved_pct = null; o.cost_saved_pct = null; }
+  return { options, trace, baseline_available: hasBaseline,
+    candidates_considered: trace.length, feasible_windows: feasible.length,
     baseline_carbon_g: runNow ? runNow.carbon_g : null,
     deadline_iso: job.deadline_iso, now_iso: iso(nowMs) };
 }

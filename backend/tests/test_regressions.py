@@ -279,3 +279,72 @@ def test_job_creation_succeeds_when_the_state_file_cannot_be_written(monkeypatch
             "duration_minutes": 30, "deadline_hours": 6})
     assert response.status_code == 200, response.text
     assert response.json()["job"]["name"] == "locked-disk-job"
+
+
+# --- India: carbon intensity derived from a published generation mix ---------
+
+def test_intensity_from_mix_matches_hand_calculation():
+    """The arithmetic must be exactly mix-weighted factors, not an approximation."""
+    from app.emissions import EMISSION_FACTORS, intensity_from_mix
+    mix = {"Coal": 1000.0, "Solar": 1000.0}
+    intensity, renewable, _ = intensity_from_mix(mix)
+    assert intensity == round((1000 * EMISSION_FACTORS["coal"] + 1000 * 0.0) / 2000, 1)
+    assert renewable == 50.0
+
+
+def test_mix_renewable_share_is_measured_not_derived():
+    """Unlike the UK national path, renewable % here comes from the mix itself."""
+    from app.emissions import intensity_from_mix
+    _, renewable, _ = intensity_from_mix(
+        {"Coal": 5000, "Hydro": 2000, "Wind": 2000, "Solar": 1000})
+    assert renewable == 50.0
+
+
+def test_mix_rejects_empty_and_negative_generation():
+    from app.emissions import intensity_from_mix
+    import pytest
+    with pytest.raises(ValueError):
+        intensity_from_mix({"Coal": 0})
+    with pytest.raises(ValueError):
+        intensity_from_mix({"Coal": -10})
+
+
+def test_unknown_fuel_labels_are_flagged_not_silently_counted():
+    """An unrecognised fuel gets the generic factor, and the caller is told."""
+    from app.emissions import normalise_fuel, unknown_fuels
+    assert normalise_fuel("Fusion Reactor") == "other"
+    assert unknown_fuels(["Coal", "Fusion Reactor", "Solar"]) == ["Fusion Reactor"]
+    assert unknown_fuels(["Coal", "Other"]) == []
+
+
+def test_cea_style_fuel_labels_are_recognised():
+    from app.emissions import normalise_fuel
+    for label, expected in [("Large Hydro", "hydro"), ("Small hydro", "hydro"),
+                            ("Solar PV", "solar"), ("Thermal (Coal)", "other"),
+                            ("coal", "coal"), ("LIGNITE", "lignite"),
+                            ("Gas Turbine", "gas"), ("Bagasse", "bagasse")]:
+        assert normalise_fuel(label) == expected, label
+
+
+def test_recommend_without_an_immediate_baseline_reports_undefined_savings():
+    """An imported forecast can start after 'now'; savings are then undefined.
+
+    Reporting 0% would be a claim we cannot support, and it collapsed the ranked
+    list to a single row because every option looked identical.
+    """
+    from datetime import datetime, timedelta, timezone
+    from app.engine import recommend
+    from app.models import Job
+    from app.clock import iso
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    # Forecast begins two hours after "now", so nothing can run immediately.
+    slots = _ramp_slots(now + timedelta(hours=2),
+                        [300, 280, 210, 160, 120, 140, 190, 240, 260, 280, 300, 320])
+    job = Job(id="j", name="j", energy_kwh=9, duration_minutes=45,
+              deadline_iso=iso(now + timedelta(hours=9)))
+    result = recommend(job, slots, now)
+    assert result["baseline_available"] is False
+    assert all(o["carbon_saved_pct"] is None for o in result["options"])
+    assert len(result["options"]) > 1, "ranking must not collapse without a baseline"
+    carbons = [o["carbon_g"] for o in result["options"]]
+    assert carbons == sorted(carbons), "options must still be ordered by carbon"

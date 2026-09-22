@@ -95,6 +95,10 @@ export const getArtifact = (id) =>
 // rather than pretending to work.
 export const getRegionForecast = (region) =>
   withFallback("getRegionForecast", () => req(`/api/regions/${encodeURIComponent(region)}/forecast`), [region]);
+export const importGenerationMix = (body) =>
+  withFallback("importGenerationMix", () => req("/api/regions/import-mix", { method: "POST", body: JSON.stringify(body) }), [body]);
+export const getEmissionFactors = () =>
+  withFallback("getEmissionFactors", () => req("/api/emission-factors"), []);
 export const importForecast = (body) =>
   withFallback("importForecast", () => req("/api/regions/import", { method: "POST", body: JSON.stringify(body) }), [body]);
 export const trainModel = (dataset) =>

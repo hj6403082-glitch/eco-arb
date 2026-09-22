@@ -112,6 +112,19 @@ class ForecastImport(BaseModel):
     rows: list[Grid] = Field(min_length=2, max_length=100)
 
 
+class MixRow(BaseModel):
+    timestamp: str
+    # Fuel -> megawatts, exactly as CEA and Grid-India publish it.
+    mix: dict[str, float] = Field(min_length=1, max_length=30)
+
+
+class GenerationMixImport(BaseModel):
+    """Half-hourly generation by fuel; intensity is derived, not supplied."""
+    region: Literal["in-north", "in-south"]
+    source_name: str = Field(min_length=3, max_length=120)
+    rows: list[MixRow] = Field(min_length=2, max_length=100)
+
+
 class SpeedSet(BaseModel):
     speed: int
 

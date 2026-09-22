@@ -39,6 +39,37 @@ The self-contained scenario does not claim Indian live telemetry or remote cloud
 - **AI scope:** an explainable deterministic optimizer consumes a public grid forecast. No proprietary forecasting model, LLM or reinforcement-learning agent is claimed.
 - **Region:** the UK is an accessible reference feed, not Indian telemetry. Cross-region SHIFT is not implemented because this prototype has one execution region.
 
+## Indian grid data
+
+India publishes generation by fuel in MW — CEA's dashboards and Grid-India's
+regional dispatch reports — not carbon intensity. There is no free public Indian
+carbon-intensity forecast comparable to the UK's, so the app offers three routes
+and labels which one produced every figure:
+
+1. **Derive it from a generation mix.** Regions → *Import an Indian generation
+   mix (CEA / Grid-India)*, or `POST /api/regions/import-mix` with consecutive
+   UTC half-hour rows of `{fuel: MW}`. The server multiplies the mix by
+   published direct-combustion emission factors — the same basis the UK Carbon
+   Intensity API uses, so the two are comparable — and marks the result
+   `derived_from_generation_mix`. Renewable share here is **measured from the
+   mix**, which is stronger provenance than the UK national feed, where it is
+   back-calculated from intensity. `GET /api/emission-factors` returns the exact
+   factors so the arithmetic is inspectable. Unrecognised fuel labels fall back
+   to a generic factor and are reported, never silently absorbed.
+2. **Connect a provider.** Set `ELECTRICITY_MAPS_TOKEN` and the Indian regions
+   pull live forecasts directly.
+3. **Import intensity you already have.** `POST /api/regions/import` takes
+   gCO₂/kWh rows directly.
+
+Until one of those supplies data, the Indian regions read "Not connected" in
+operational mode. The guided scenario on Simulation does show Indian numbers,
+but they are a hardcoded fixture flagged `synthetic_scenario` — never describe
+them as measured.
+
+An imported forecast often begins after the current half-hour, so there is no
+window to run in immediately. Savings are then reported as unavailable rather
+than zero, and windows are ranked by absolute carbon instead.
+
 ## Architecture
 
 React 19 + Vite + Tailwind/CSS → FastAPI → window optimizer → APScheduler → bounded worker pool → JSON execution proofs.
