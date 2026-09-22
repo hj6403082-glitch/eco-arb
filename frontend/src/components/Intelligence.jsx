@@ -10,7 +10,12 @@ export function Intelligence({model, onUpdate}) {
 
 export function Regions({regions, mode, Forecast, nowIso, onUpdate}) {
   const [selected,setSelected]=useState('gb'),[rows,setRows]=useState([]),[error,setError]=useState(''),[draft,setDraft]=useState(''),[busy,setBusy]=useState(false),[horizon,setHorizon]=useState(24);
-  useEffect(()=>{let live=true;api.getRegionForecast(selected).then(r=>{if(live){setRows(r.forecast);setError('')}}).catch(e=>{if(live)setError(e.message)});return()=>{live=false}},[selected,mode,nowIso]);
+  // nowIso changes on every 1.5s poll, so depending on it refetched the region
+  // forecast continuously -- and in offline mode flashed an error banner at that
+  // rate. A half-hourly forecast only needs refetching when the region, the data
+  // mode or the half-hour actually changes.
+  const halfHour = Math.floor(Date.parse(nowIso) / 1800000);
+  useEffect(()=>{let live=true;api.getRegionForecast(selected).then(r=>{if(live){setRows(r.forecast);setError('')}}).catch(e=>{if(live)setError(e.message)});return()=>{live=false}},[selected,mode,halfHour]);
   const template=()=>{const start=Math.floor(Date.parse(nowIso)/1800000)*1800000;setDraft(JSON.stringify({region:'in-north',source_name:'Replace with your forecast source',rows:Array.from({length:49},(_,i)=>({timestamp:new Date(start+i*1800000).toISOString(),intensity_gco2_kwh:650}))},null,2))};
   const upload=async()=>{setBusy(true);setError('');try{const body=JSON.parse(draft);await api.importForecast(body);setSelected(body.region);await onUpdate()}catch(e){setError(e.message)}finally{setBusy(false)}};
   // India publishes generation by fuel, not carbon intensity, so this is the

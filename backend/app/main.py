@@ -13,6 +13,7 @@ from . import config, scheduler as sched
 from .carbon import feed, model_price
 from .clock import clock, iso, parse_iso, real_now
 from .engine import decide, decision_for_window, recommend
+from .fsutil import write_json_atomic
 from .executor import ARTIFACT_DIR, WORKLOADS, verify_hash_grind
 from .emissions import EMISSION_FACTORS, FACTOR_BASIS, intensity_from_mix, unknown_fuels
 from .models import ForecastImport, GenerationMixImport, Grid, Job, JobCreate, ModelTraining, SpeedSet
@@ -250,13 +251,44 @@ def job_artifact(job_id: str) -> dict:
     result = payload.get("result", {})
     verified = None
     if result.get("workload") == "hash_grind":
-        verified = verify_hash_grind(result)
+        # Recomputing the chain costs what generating it cost -- up to 30M
+        # SHA-256 rounds -- and it is deterministic, so the verdict is cached
+        # beside the artifact. Opening a receipt twice must not re-burn that,
+        # which previously blocked a worker past the client's 20s timeout.
+        cached = payload.get("verification")
+        if isinstance(cached, dict) and cached.get("digest") == result.get("final_digest"):
+            verified = cached["verified"]
+        else:
+            verified = verify_hash_grind(result)
+            payload["verification"] = {"verified": verified,
+                                       "digest": result.get("final_digest"),
+                                       "checked_at": iso(real_now())}
+            write_json_atomic(path, payload, label=f"artifact {job_id}")
     return {"artifact": payload, "independently_verified": verified,
             "verification_scope": "hash chain and Merkle root; does not verify geographic location or electricity consumption"}
 
 
 @app.post("/api/speed")
 def set_speed(payload: SpeedSet) -> dict:
+    # Compressing time is the point of the demo, so this does not refuse it
+    # outright. It refuses only the case that actually loses work: a speed-up
+    # that makes one tick longer than the slack left on a job still waiting to
+    # start, so the next tick would jump past its deadline and mark it MISSED.
+    # Slowing down, or holding the current speed, can never strand anything.
+    if payload.speed > clock.speed:
+        now = clock.now()
+        tick = timedelta(seconds=config.TICK_SECONDS * payload.speed)
+        with store.lock:
+            waiting = [j for j in store.jobs.values() if j.status in ("QUEUED", "WAITING")]
+        stranded = [j.id for j in waiting
+                    if parse_iso(j.deadline_iso) - now - timedelta(minutes=j.duration_minutes) < tick]
+        if stranded:
+            raise HTTPException(
+                409,
+                f"{payload.speed}x would advance the clock past the deadline of "
+                f"{len(stranded)} waiting workload(s) ({', '.join(sorted(stranded)[:3])}) "
+                "before they could start. Let them finish, cancel them, or choose a lower speed.",
+            )
     try:
         speed = clock.set_speed(payload.speed)
     except ValueError as exc:

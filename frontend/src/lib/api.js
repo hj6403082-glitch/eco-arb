@@ -28,10 +28,12 @@ async function req(path, options) {
   return res.json();
 }
 
-// fetch() rejects with a TypeError when it cannot reach a server at all, and an
-// AbortError/TimeoutError when nothing replied in time. Either means no backend.
-const unreachable = (e) =>
-  e instanceof TypeError || e.name === "TimeoutError" || e.name === "AbortError";
+// fetch() rejects with a TypeError only when it cannot reach a server at all.
+// A timeout does NOT mean that: a slow endpoint on a healthy backend times out
+// too, and treating that as "no backend" would swap the real queue, totals and
+// logs for an empty in-browser stub mid-session. Only the /api/state probe
+// below is allowed to make that call, and only on a transport failure.
+const unreachable = (e) => e instanceof TypeError;
 
 async function withFallback(call, run, args) {
   if (offline) {

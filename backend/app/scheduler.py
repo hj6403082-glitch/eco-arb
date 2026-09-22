@@ -15,6 +15,8 @@ from datetime import timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+import logging
+
 from . import config
 from .carbon import feed
 from .clock import clock, iso, parse_iso
@@ -22,6 +24,8 @@ from .engine import decide, score_window
 from .executor import pool, run_job
 from .models import Job
 from .store import store
+
+log = logging.getLogger("eco_arb.scheduler")
 from .regions import registry
 from .learning import learned
 
@@ -75,15 +79,23 @@ def _on_finished(job_id: str, future) -> None:
 
     store.checkpoint()
 
-def _dispatch(job: Job, slots) -> None:
+def _dispatch(job: Job) -> None:
     """Start the real workload. Called with store.lock held."""
     if sum(j.status == "RUNNING" for j in store.jobs.values()) >= 4:
         return
     vnow = clock.now()
     decision = store.decisions.get(job.id)
     job.target_region = decision.target_region if decision else job.home_region
-    slots = registry.forecast(job.target_region, vnow, job.data_mode,
-                              job.forecast_method if job.target_region == job.home_region else "provider")
+    try:
+        slots = registry.forecast(job.target_region, vnow, job.data_mode,
+                                  job.forecast_method if job.target_region == job.home_region else "provider")
+    except ValueError as exc:
+        # An untrained learned model or a region that lost its feed. Hold the
+        # job rather than letting the exception escape tick() and stall every
+        # other job in the queue.
+        job.status = "WAITING"
+        store.log(f"{job.id}: cannot dispatch yet ({exc})", "WARN")
+        return
 
     scored = score_window(slots, vnow, job.duration_minutes, job.energy_kwh)
     if scored is None:
@@ -128,6 +140,13 @@ def _dispatch(job: Job, slots) -> None:
 
 
 def tick() -> None:
+    try:
+        _tick()
+    except Exception:  # noqa: BLE001 - the scheduler thread must never die
+        log.exception("Scheduler tick failed; the queue continues on the next tick")
+
+
+def _tick() -> None:
     vnow = clock.now()
     slots = feed.forecast(vnow)
     if not slots:
@@ -159,11 +178,11 @@ def tick() -> None:
                 job.status = "WAITING"
                 job.run_at_iso = previous.run_at_iso
                 if parse_iso(previous.run_at_iso) <= vnow:
-                    _dispatch(job, slots)
+                    _dispatch(job)
                 continue
 
             if previous and previous.action in ("WAIT", "SHIFT") and parse_iso(previous.run_at_iso) <= vnow:
-                _dispatch(job, slots)
+                _dispatch(job)
                 continue
             try:
                 decision = registry.plan(job, vnow)
@@ -190,7 +209,7 @@ def tick() -> None:
                     store.log(
                         f"{job.id} REPLAN -> RUN NOW: {decision.reason}", "PLAN"
                     )
-                _dispatch(job, slots)
+                _dispatch(job)
                 continue
 
             job.status = "WAITING"
@@ -205,7 +224,7 @@ def tick() -> None:
                 )
 
             if parse_iso(decision.run_at_iso) <= vnow:
-                _dispatch(job, slots)
+                _dispatch(job)
 
     store.checkpoint()
 

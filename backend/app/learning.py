@@ -12,7 +12,7 @@ from datetime import timedelta
 
 import httpx
 
-from .fsutil import write_json_atomic
+from .fsutil import quarantine, write_json_atomic
 from .clock import iso, parse_iso, real_now
 
 
@@ -77,8 +77,11 @@ class LearnedForecast:
         self.report = {"trained": False, "algorithm": "seasonal ridge regression"}
         self.path = path
         if path and path.exists():
-            saved = json.loads(path.read_text(encoding="utf-8"))
-            self.coefficients, self.report = saved["coefficients"], saved["report"]
+            try:
+                saved = json.loads(path.read_text(encoding="utf-8"))
+                self.coefficients, self.report = saved["coefficients"], saved["report"]
+            except (ValueError, TypeError, OSError, KeyError) as exc:
+                quarantine(path, str(exc), label="trained model")
 
     def train(self, rows, dataset):
         rows = sorted(rows, key=lambda r: parse_iso(r["timestamp"]))

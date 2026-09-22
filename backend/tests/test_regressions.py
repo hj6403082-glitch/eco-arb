@@ -117,7 +117,7 @@ def test_worker_capacity_does_not_mark_queued_work_running():
         store.add(Job(id=str(i),name="busy",energy_kwh=1,status="RUNNING",deadline_iso=iso(clock.now()+timedelta(hours=1))))
     queued=Job(id="next",name="next",energy_kwh=1,deadline_iso=iso(clock.now()+timedelta(hours=1)))
     store.add(queued)
-    scheduler._dispatch(queued,[])
+    scheduler._dispatch(queued)
     assert queued.status=="QUEUED"
 
 def test_zero_dispatch_slack_is_rejected():
@@ -210,16 +210,44 @@ def test_chosen_window_is_scored_by_the_same_function():
 
 
 def test_pinned_job_keeps_its_window_when_the_scheduler_replans():
-    """A window the operator picked must not be silently re-optimised away."""
-    from datetime import datetime, timedelta, timezone
-    from app.models import Job
-    from app.clock import iso
-    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-    job = Job(id="j", name="j", energy_kwh=9, duration_minutes=45,
-              deadline_iso=iso(now + timedelta(hours=5)), pinned=True,
-              run_at_iso=iso(now + timedelta(hours=3)), status="WAITING")
-    assert job.pinned is True
-    assert job.run_at_iso == iso(now + timedelta(hours=3))
+    """A window the operator picked must survive an actual scheduler tick.
+
+    The earlier version of this test only asserted back the arguments it had
+    just passed to the Job constructor, so the pinned branch in scheduler.tick
+    was never executed.
+    """
+    from datetime import timedelta
+    from app import scheduler
+    from app.clock import clock, iso, parse_iso
+    from app.models import Decision, Job
+    from app.store import store
+
+    with store.lock:
+        store.jobs.clear()
+        store.decisions.clear()
+
+    vnow = clock.now()
+    chosen = parse_iso(iso(vnow + timedelta(hours=3)))
+    job = Job(id="pinned-1", name="pinned", energy_kwh=1, duration_minutes=30,
+              deadline_iso=iso(vnow + timedelta(hours=8)), pinned=True,
+              run_at_iso=iso(chosen), status="WAITING")
+    with store.lock:
+        store.add(job)
+        store.set_decision(Decision(
+            job_id=job.id, action="WAIT", run_at_iso=iso(chosen),
+            carbon_saved_pct=12.0, cost_saved_pct=8.0, reason="operator choice",
+            window_end_iso=iso(chosen + timedelta(minutes=30)), decided_at_iso=iso(vnow)))
+
+    scheduler.tick()          # the real scheduler, not a stand-in
+
+    kept = store.get("pinned-1")
+    assert kept.pinned is True
+    assert kept.run_at_iso == iso(chosen), "the scheduler moved an operator-chosen window"
+    assert store.decisions["pinned-1"].run_at_iso == iso(chosen)
+
+    with store.lock:
+        store.jobs.clear()
+        store.decisions.clear()
 
 
 # --- persistence must never take the app down -------------------------------
@@ -348,3 +376,114 @@ def test_recommend_without_an_immediate_baseline_reports_undefined_savings():
     assert len(result["options"]) > 1, "ranking must not collapse without a baseline"
     carbons = [o["carbon_g"] for o in result["options"]]
     assert carbons == sorted(carbons), "options must still be ordered by carbon"
+
+
+# --- the app must survive its own bad files and one bad job -----------------
+
+def test_a_corrupt_state_file_does_not_stop_the_app_starting(tmp_path):
+    """An interrupted write is exactly what atomic saving exists to survive.
+
+    Refusing to boot because of one turned a recoverable glitch into a dead
+    application -- and the Windows file-locking path makes truncated writes a
+    real possibility rather than a theoretical one.
+    """
+    from app.store import Store
+    broken = tmp_path / "state.json"
+    broken.write_text('{"seq":', encoding="utf-8")
+    store = Store(path=broken) if "path" in Store.__init__.__code__.co_varnames else None
+    if store is None:                       # Store reads its path from the environment
+        import os
+        os.environ["ECO_ARB_STATE"] = str(broken)
+        store = Store()
+    assert store.jobs == {}
+    assert (tmp_path / "state.json.unreadable").exists(), "the bad file should be kept, not deleted"
+
+
+def test_a_corrupt_region_cache_does_not_stop_the_app_starting(tmp_path):
+    from app.regions import RegionRegistry
+    broken = tmp_path / "regions.json"
+    broken.write_text('{"rows": {"in-north": [{"bogus": 1}]}, "sources": {}}', encoding="utf-8")
+    registry = RegionRegistry(path=broken)
+    assert registry.rows == {}
+    assert (tmp_path / "regions.json.unreadable").exists()
+
+
+def test_one_undispatchable_job_does_not_stall_the_whole_queue(monkeypatch):
+    """registry.forecast raising inside _dispatch used to escape tick().
+
+    Every later job in the loop was then skipped, and so was the checkpoint, on
+    that tick and every tick after it.
+    """
+    from datetime import timedelta
+    from app import scheduler
+    from app.clock import clock, iso
+    from app.models import Job
+    from app.store import store
+
+    with store.lock:
+        store.jobs.clear()
+        store.decisions.clear()
+
+    vnow = clock.now()
+    job = Job(id="bad-1", name="bad", energy_kwh=1, duration_minutes=30,
+              deadline_iso=iso(vnow + timedelta(hours=6)), status="QUEUED")
+    with store.lock:
+        store.add(job)
+
+    def explode(*args, **kwargs):
+        raise ValueError("region feed vanished")
+
+    monkeypatch.setattr(scheduler.registry, "forecast", explode)
+    scheduler._dispatch(job)                      # must not raise
+    assert store.get("bad-1").status == "WAITING"
+
+    scheduler.tick()                              # must not raise either
+
+    with store.lock:
+        store.jobs.clear()
+        store.decisions.clear()
+
+
+def test_speeding_up_only_refuses_when_it_would_strand_a_waiting_job():
+    """Compressing time is the demo. Only a speed-up that outruns a job's
+    remaining slack is refused; a roomy deadline, and slowing down, are not."""
+    from datetime import timedelta
+    from fastapi.testclient import TestClient
+    from app import config
+    from app.clock import clock, iso
+    from app.main import app
+    from app.models import Job
+    from app.store import store
+
+    # One tick at 360x advances this much virtual time.
+    tick = timedelta(seconds=config.TICK_SECONDS * 360)
+
+    def queue(slack: timedelta) -> None:
+        with store.lock:
+            store.jobs.clear()
+            store.decisions.clear()
+            store.add(Job(id="hold-1", name="hold", energy_kwh=1, duration_minutes=30,
+                          deadline_iso=iso(clock.now() + timedelta(minutes=30) + slack),
+                          status="WAITING"))
+
+    try:
+        # Slack smaller than one tick: the next tick would jump past the
+        # deadline, so the speed-up is refused.
+        queue(tick / 2)
+        with TestClient(app) as client:
+            assert client.post("/api/speed", json={"speed": 360}).status_code == 409
+            assert clock.speed == 1
+
+        # Plenty of slack: this is the ordinary demo flow and must work.
+        queue(timedelta(hours=6))
+        with TestClient(app) as client:
+            assert client.post("/api/speed", json={"speed": 360}).status_code == 200
+            assert clock.speed == 360
+            # Slowing down can never strand anything, even with work pending.
+            assert client.post("/api/speed", json={"speed": 1}).status_code == 200
+            assert clock.speed == 1
+    finally:
+        clock.set_speed(1)
+        with store.lock:
+            store.jobs.clear()
+            store.decisions.clear()

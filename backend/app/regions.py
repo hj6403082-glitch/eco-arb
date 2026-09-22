@@ -14,7 +14,7 @@ from datetime import timedelta
 import httpx
 
 from .carbon import feed, floor_to_slot, derive_renewable_pct, model_price
-from .fsutil import write_json_atomic
+from .fsutil import quarantine, write_json_atomic
 from .clock import iso, parse_iso, real_now
 from .engine import decide, score_window
 from .learning import learned
@@ -39,11 +39,15 @@ class RegionRegistry:
         self.scenario_anchor = floor_to_slot(real_now()) if self.mode == "scenario" else None
         self.path = path
         if path and path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            self.rows = {k: [Grid(**r) for r in v] for k, v in data["rows"].items()}
-            self.sources = data["sources"]
-            self.errors = {k: "Restored forecast cache; awaiting refresh" for k, v in self.rows.items()
-                           if any(r.source_kind != "imported" for r in v)}
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                self.rows = {k: [Grid(**r) for r in v] for k, v in data["rows"].items()}
+                self.sources = data["sources"]
+                self.errors = {k: "Restored forecast cache; awaiting refresh" for k, v in self.rows.items()
+                               if any(r.source_kind != "imported" for r in v)}
+            except (ValueError, TypeError, OSError, KeyError) as exc:
+                self.rows, self.sources, self.errors = {}, {}, {}
+                quarantine(path, str(exc), label="region forecast cache")
 
     def refresh(self):
         def fetch_region(key):

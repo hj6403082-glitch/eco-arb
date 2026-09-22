@@ -10,7 +10,7 @@ from typing import Deque, Dict, List, Optional
 
 from . import config
 from .clock import clock, iso, real_now
-from .fsutil import write_json_atomic
+from .fsutil import quarantine, write_json_atomic
 from .models import Decision, Job, LogLine
 
 
@@ -46,8 +46,14 @@ class Store:
                 if job.status == "RUNNING":
                     job.status = "FAILED"
                     job.result = {"error": "Execution interrupted by server restart; submit a new workload to retry."}
-        except (ValueError, TypeError, OSError) as exc:
-            raise RuntimeError(f"Cannot restore saved state at {self.path}: {exc}") from exc
+        except (ValueError, TypeError, OSError, KeyError) as exc:
+            # Losing the previous session is an inconvenience; refusing to start
+            # is a dead demo. Reset to empty and keep the file for inspection.
+            self.jobs, self.decisions, self._seq = {}, {}, 0
+            for key in ("baselines", "baseline_costs", "actual_carbon", "actual_cost"):
+                setattr(self, key, {})
+            self.logs.clear()
+            quarantine(self.path, str(exc), label="session state")
 
     def checkpoint(self):
         with self.lock:

@@ -63,3 +63,22 @@ def write_json_atomic(path: Path, payload: Any, *, label: str = "state") -> bool
     except OSError:
         pass
     return False
+
+
+def quarantine(path: Path, reason: str, *, label: str = "state") -> None:
+    """Move a file we cannot parse aside so the next start is clean.
+
+    A half-written state file is exactly what an interrupted write leaves
+    behind -- the very failure write_json_atomic exists to survive -- so
+    refusing to start because of one turns a recoverable glitch into a dead
+    application. The file is kept, not deleted, in case it is wanted.
+    """
+    log.warning("Ignoring unreadable %s at %s: %s", label, path, reason)
+    try:
+        spoiled = path.with_suffix(path.suffix + ".unreadable")
+        if spoiled.exists():
+            spoiled.unlink()
+        path.rename(spoiled)
+        log.warning("Moved it to %s and started clean.", spoiled)
+    except OSError as exc:
+        log.warning("Could not move it aside (%s); starting clean regardless.", exc)

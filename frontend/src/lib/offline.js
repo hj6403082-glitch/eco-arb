@@ -334,6 +334,22 @@ export function createOfflineBackend() {
   async function execute(job) {
     if (running >= 4) return;
     running++;
+    try {
+      await runWorkload(job);
+    } catch (e) {
+      // crypto.subtle is undefined on an insecure origin, among other things.
+      // Without this the slot leaks and the job sticks on RUNNING forever,
+      // which after four jobs stops execution and blocks reset entirely.
+      job.status = "FAILED";
+      job.progress = 0;
+      job.result = { error: String(e && e.message ? e.message : e) };
+      log("FAIL", `${job.name}: ${job.result.error}`);
+    } finally {
+      running--;
+    }
+  }
+
+  async function runWorkload(job) {
     job.status = "RUNNING"; job.started_iso = iso(vnow()); job.progress = 0;
     log("EXEC", `${job.name}: started (${job.workload}).`);
     const seed = `${job.id}:${job.started_iso}`;
@@ -355,7 +371,6 @@ export function createOfflineBackend() {
     job.result = { workload: job.workload, rounds: totalRounds, digest, seed };
     job.progress = 1; job.status = "DONE"; job.finished_iso = iso(vnow());
     log("DONE", `${job.name}: complete. Digest ${digest.slice(0, 16)}...`);
-    running--;
   }
 
   setInterval(() => {
@@ -366,7 +381,13 @@ export function createOfflineBackend() {
         // job the user deliberately placed.
         if (!job.pinned) redecide(job);
         if (Date.parse(job.run_at_iso) <= now) {
-          if (Date.parse(job.deadline_iso) < now) { job.status = "MISSED"; log("WARN", `${job.name}: window missed.`); }
+          // Match the server: a job is missed when it cannot FINISH by the
+          // deadline, not merely when the deadline has passed. The looser test
+          // ran and credited jobs that could never have completed in time.
+          if (now + job.duration_minutes * 60000 > Date.parse(job.deadline_iso)) {
+            job.status = "MISSED";
+            log("WARN", `${job.name}: no window remains before the deadline.`);
+          }
           else execute(job);
         }
       }
