@@ -169,6 +169,7 @@ The service binds to loopback. It has no authentication, tenant isolation, measu
 The original archives remain untouched. The separate backend archive contained empty source stubs and was not used as an implementation.
 
 
+
 ## Electric Biosphere visual system
 
 The interface combines electric violet, cyan, acid lime and coral. A procedural particle field, flowing energy traces, rotating reactor rings, breathing ambient light, staggered card entrances and hover feedback bring the control room to life. Decorative motion does not represent extra telemetry. Use the header Motion toggle to pause it; system reduced-motion preferences are respected. The particle canvas is capped at 30 frames per second and skips rendering when the tab is hidden.
