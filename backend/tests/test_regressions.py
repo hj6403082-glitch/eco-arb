@@ -487,3 +487,77 @@ def test_speeding_up_only_refuses_when_it_would_strand_a_waiting_job():
         with store.lock:
             store.jobs.clear()
             store.decisions.clear()
+
+
+def test_indian_intensities_do_not_collapse_to_the_british_renewable_floor():
+    """carbon.derive_renewable_pct saturates at 400 gCO2/kWh, which is below
+    every value the Indian grid produces, so it returned a flat 5% for all of
+    them. India has its own fit."""
+    from app.carbon import derive_renewable_pct as gb_fit
+    from app.india import derive_renewable_pct as in_fit
+
+    indian_range = (487.0, 550.0, 574.0, 667.0)
+
+    # The British calibration is saturated across the whole Indian range.
+    assert len({gb_fit(v) for v in indian_range}) == 1
+
+    # The India fit is monotonic in the right direction and spans real ground.
+    shares = [in_fit(v) for v in indian_range]
+    assert shares == sorted(shares, reverse=True)
+    assert 10.0 < min(shares) and max(shares) < 45.0
+
+    # It reproduces the paired observations it was fitted to, within the
+    # residual quoted in india.RENEWABLE_BASIS.
+    for intensity, measured in ((457.0, 40.73), (461.0, 40.02), (550.0, 28.31)):
+        assert abs(in_fit(intensity) - measured) < 2.0
+
+
+def test_the_recorded_indian_forecast_is_real_data_and_says_so():
+    from app.carbon import floor_to_slot
+    from app.clock import real_now
+    from app.india import recorded_india
+
+    assert recorded_india.available
+    rows = recorded_india.forecast(floor_to_slot(real_now()))
+
+    # A full horizon of contiguous half-hours.
+    assert len(rows) == 49
+    assert all(r.source_kind == "recorded_real" for r in rows)
+
+    # Replayed, so never flagged live -- the clock is not the capture's.
+    assert not any(r.live for r in rows)
+
+    # The real curve, unsmoothed: the provider's own range for that day.
+    values = [r.intensity_gco2_kwh for r in rows]
+    assert min(values) == 487.0 and max(values) == 667.0
+
+
+def test_the_indian_national_region_has_data_without_a_key_or_network():
+    """The point of the recorded capture: India is not an empty page for
+    anyone who has no API key, and is never labelled as a live pull."""
+    from app.clock import real_now
+    from app.regions import registry
+
+    described = {r["id"]: r for r in registry.describe(real_now())}
+    india = described["in"]
+
+    assert india["available"]
+    assert india["current"]["source_kind"] == "recorded_real"
+    assert "recorded" in india["source"].lower()
+    assert not india["current"]["live"]
+
+
+def test_the_browser_copy_of_the_indian_capture_matches_the_server_copy():
+    """The hosted page bundles its own copy of the recorded capture. If the two
+    drift, the static build and the backend quietly disagree about real data,
+    which is exactly the failure the capture exists to prevent."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    server = root / "backend" / "app" / "data" / "india_recorded.json"
+    browser = root / "frontend" / "src" / "data" / "india_recorded.json"
+
+    assert browser.exists(), "the browser bundle is missing its copy of the capture"
+    assert json.loads(server.read_text(encoding="utf-8")) == \
+           json.loads(browser.read_text(encoding="utf-8"))

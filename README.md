@@ -42,9 +42,21 @@ The self-contained scenario does not claim Indian live telemetry or remote cloud
 ## Indian grid data
 
 India publishes generation by fuel in MW — CEA's dashboards and Grid-India's
-regional dispatch reports — not carbon intensity. There is no free public Indian
-carbon-intensity forecast comparable to the UK's, so the app offers three routes
+regional dispatch reports — not carbon intensity. There is no *free* public Indian
+carbon-intensity forecast comparable to the UK's, so the app offers four routes
 and labels which one produced every figure:
+
+0. **The recorded capture, which needs nothing at all.** `in` (India · National
+   grid) is backed by a real Electricity Maps forecast for zone `IN`, recorded
+   on 2026-09-19 and committed to the repo as
+   `backend/app/data/india_recorded.json`. It is a full 24 hours, 487–667
+   gCO₂/kWh, replayed by UTC half-hour of day so the recorded diurnal shape
+   lines up with the displayed clock. The intensities are exactly as the
+   provider returned them — nothing interpolated, nothing smoothed — and every
+   row is flagged `recorded_real` and never `live`. **This is real data on a
+   replayed clock; it is not a live pull, and the UI never says it is.** The
+   hosted static build bundles the identical file, so the page on GitHub Pages
+   shows the same real Indian numbers with no backend at all.
 
 1. **Derive it from a generation mix.** Regions → *Import an Indian generation
    mix (CEA / Grid-India)*, or `POST /api/regions/import-mix` with consecutive
@@ -57,14 +69,31 @@ and labels which one produced every figure:
    factors so the arithmetic is inspectable. Unrecognised fuel labels fall back
    to a generic factor and are reported, never silently absorbed.
 2. **Connect a provider.** Set `ELECTRICITY_MAPS_TOKEN` and the Indian regions
-   pull live forecasts directly.
+   pull live forecasts directly. Setting `ATLAS_API_KEY` additionally unlocks
+   EnergyMap India's national fuel mix and — the one that matters — **real IEX
+   real-time-market clearing prices**. Everywhere else in this system `price` is
+   modelled; with an IEX key, India's is measured.
 3. **Import intensity you already have.** `POST /api/regions/import` takes
    gCO₂/kWh rows directly.
 
-Until one of those supplies data, the Indian regions read "Not connected" in
-operational mode. The guided scenario on Simulation does show Indian numbers,
+The national region `in` always has the recorded capture to fall back on. The
+zonal regions (`in-north`, `in-south`) read "Not connected" in operational mode
+until one of routes 1–3 supplies data, because the capture is national and
+relabelling it as zonal would be a claim the data does not support. The guided scenario on Simulation does show Indian numbers,
 but they are a hardcoded fixture flagged `synthetic_scenario` — never describe
 them as measured.
+
+### Renewable share in India
+
+`carbon.derive_renewable_pct` is calibrated to the British grid and saturates at
+400 gCO₂/kWh. Every value the Indian grid produces is above that, so before this
+was fixed **every Indian slot reported a flat 5% renewable** when the real figure
+runs 13–41%. `app/india.py` carries a separate fit, least-squares over five real
+paired (intensity, renewable share) observations from 2026-09-19: R² 0.97, every
+point within 1.6 percentage points. Five points is a small sample and the ends
+are extrapolation, so it is labelled *derived*, never *measured*. A generation-mix
+import (route 1) gives a genuinely measured share and should be preferred when
+you have one.
 
 An imported forecast often begins after the current half-hour, so there is no
 window to run in immediately. Savings are then reported as unavailable rather

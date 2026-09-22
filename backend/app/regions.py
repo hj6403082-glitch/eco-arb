@@ -14,16 +14,20 @@ from datetime import timedelta
 import httpx
 
 from .carbon import feed, floor_to_slot, derive_renewable_pct, model_price
+from .india import recorded_india
+from .india import derive_renewable_pct as derive_india_renewable_pct
 from .fsutil import quarantine, write_json_atomic
 from .clock import iso, parse_iso, real_now
 from .engine import decide, score_window
 from .learning import learned
+from . import india
 from .models import Grid
 
 REGIONS = {
     "gb": {"name": "Great Britain", "country": "GB", "provider_id": None},
     "gb-london": {"name": "London", "country": "GB", "provider_id": 13},
     "gb-scotland": {"name": "North Scotland", "country": "GB", "provider_id": 1},
+    "in": {"name": "India · National grid", "country": "IN", "zone": "IN"},
     "in-north": {"name": "India · Northern grid", "country": "IN", "zone": "IN-NO"},
     "in-south": {"name": "India · Southern grid", "country": "IN", "zone": "IN-SO"},
 }
@@ -84,7 +88,9 @@ class RegionRegistry:
                         for offset in (0, 30):
                             stamp = parse_iso(r["datetime"]) + timedelta(minutes=offset)
                             rows.append(Grid(timestamp=iso(stamp), intensity_gco2_kwh=value,
-                                             renewable_pct=derive_renewable_pct(value), price=model_price(value, stamp),
+                                             renewable_pct=derive_india_renewable_pct(value),
+                                             price=model_price(value, stamp),
+                                             renewable_basis=india.RENEWABLE_BASIS,
                                              source_kind="provider_forecast"))
                     source = "Electricity Maps direct-emissions forecast; hourly values held for two half-hours"
                 if len(rows) < 2:
@@ -128,11 +134,13 @@ class RegionRegistry:
             elapsed = (stamp - anchor).total_seconds() / 3600
             # Deliberately distinct fixture windows for RUN, WAIT and SHIFT.
             base = {"gb": 310, "gb-london": 340, "gb-scotland": 45,
-                    "in-north": 780, "in-south": 140}[key]
+                    "in": 570, "in-north": 780, "in-south": 140}[key]
             trough = 0.24 if 2 <= elapsed % 24 < 5 else 1.0
             value = base * (trough if key in ("gb", "gb-london", "in-north") else 1)
+            renewable = (derive_india_renewable_pct(value) if REGIONS[key]["country"] == "IN"
+                         else derive_renewable_pct(value))
             rows.append(Grid(timestamp=iso(stamp), intensity_gco2_kwh=value,
-                             renewable_pct=derive_renewable_pct(value), price=model_price(value, stamp),
+                             renewable_pct=renewable, price=model_price(value, stamp),
                              live=False, source_kind="synthetic_scenario"))
         return rows
 
@@ -164,8 +172,17 @@ class RegionRegistry:
         with self.lock:
             rows = self.rows.get(key, [])
             stale = key in self.errors
-            return [r.model_copy(update={"live": False, "source_kind": "cached"}) if stale else r.model_copy()
+            live = [r.model_copy(update={"live": False, "source_kind": "cached"}) if stale else r.model_copy()
                     for r in rows if parse_iso(r.timestamp) + timedelta(minutes=30) > now]
+        if live:
+            return live
+        # Nothing imported and no provider connected. The national Indian grid
+        # has a recorded real forecast to fall back on; it is real data on a
+        # replayed clock, and labelled "recorded_real" so it is never mistaken
+        # for a live pull.
+        if key == "in" and recorded_india.available:
+            return recorded_india.forecast(floor_to_slot(now))
+        return live
 
     def describe(self, now):
         result = []
@@ -174,7 +191,10 @@ class RegionRegistry:
             result.append({"id": key, "name": region["name"], "country": region["country"],
                            "available": bool(rows), "current": rows[0].model_dump() if rows else None,
                            "source": "synthetic demonstration" if self.mode == "scenario" else
-                                     (feed.status()["source"] if key == "gb" else self.sources.get(key, "No provider connected; import a forecast or use scenario mode")),
+                                     (feed.status()["source"] if key == "gb" else
+                                      self.sources.get(key) or
+                                      (recorded_india.source() if key == "in" and recorded_india.available else
+                                       "No provider connected; import a forecast or use scenario mode")),
                            "error": self.errors.get(key), "execution": "local demonstration only"})
         return result
 

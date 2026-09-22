@@ -1,3 +1,4 @@
+import recordedIndia from "../data/india_recorded.json";
 /* In-browser stand-in for the FastAPI backend.
  *
  * Used only when no backend answers — a static deployment (GitHub Pages), or a
@@ -263,6 +264,27 @@ export function createOfflineBackend() {
              source_kind: isLive ? "provider_forecast" : "synthetic_fallback",
              renewable_basis: "derived proxy" };
   };
+  // Mirrors backend/app/india.py. The British renewable fit saturates at
+  // 400 gCO2/kWh, below every value the Indian grid produces, so India needs
+  // its own; this is fitted to five real paired observations.
+  const indiaRenewablePct = (intensity) =>
+    round(Math.min(Math.max(-0.13114 * intensity + 100.852, 0), 100), 1);
+  // Replays the recorded real Indian forecast by UTC half-hour of day, the
+  // same way the server does, so the hosted page and the backend agree.
+  const indiaSlot = (t) => {
+    const table = recordedIndia.intensity_by_half_hour_utc || {};
+    const at = new Date(t);
+    const key = String(at.getUTCHours()).padStart(2, "0") + ":" + (at.getUTCMinutes() < 30 ? "00" : "30");
+    const intensity = table[key];
+    if (intensity === undefined) return null;
+    return { t, timestamp: iso(t), intensity_gco2_kwh: intensity, intensity,
+             renewable_pct: indiaRenewablePct(intensity),
+             price: round(25 + 35 * Math.min(Math.max((intensity - 450) / 250, 0), 1), 2),
+             live: false, source_kind: "recorded_real",
+             renewable_basis: "linear fit to 5 paired observations, 2026-09-19 (R^2 0.97)" };
+  };
+  const indiaAvailable = Object.keys(recordedIndia.intensity_by_half_hour_utc || {}).length > 0;
+
   let liveRows = {};
   const forecast = (fromMs) => {
     const first = floorToSlot(fromMs);
@@ -459,13 +481,24 @@ export function createOfflineBackend() {
         decisions: Object.fromEntries(decisions),
         totals: totals(), impacts, logs: [...logs],
         workloads: ["hash_grind", "matrix_train"], horizon_hours: HORIZON_HOURS,
-        // Only GB national is available without a server: the regional and
-        // Indian feeds need provider calls this page cannot make, and the model
-        // needs training data it cannot fetch. Both say so rather than faking it.
+        // GB national and the Indian national capture are available without a
+        // server. The zonal feeds need provider calls this page cannot make and
+        // the model needs training data it cannot fetch; both say so rather
+        // than faking it.
         regions: [
           { id: "gb", name: "Great Britain", country: "GB", available: true,
             current: wire(buildSlot(floorToSlot(now))),
             source: live ? "UK Carbon Intensity API (fetched in-browser)" : "offline fallback curve",
+            error: null, execution: "local demonstration only" },
+          // India carries a recorded real provider forecast, which is a static
+          // file this page can read, so it is available here exactly as on the
+          // server -- real data on a replayed clock, labelled as such.
+          { id: "in", name: "India \u00b7 National grid", country: "IN",
+            available: indiaAvailable,
+            current: indiaAvailable ? wire(indiaSlot(floorToSlot(now))) : null,
+            source: indiaAvailable
+              ? "Electricity Maps forecast for zone IN, recorded 2026-09-19 and replayed by half-hour of day"
+              : "No Indian data available",
             error: null, execution: "local demonstration only" },
           ...[["gb-london", "London", "GB"], ["gb-scotland", "North Scotland", "GB"],
               ["in-north", "India \u00b7 Northern grid", "IN"], ["in-south", "India \u00b7 Southern grid", "IN"]]
@@ -480,6 +513,7 @@ export function createOfflineBackend() {
         execution_mode: "browser demonstration; no remote cloud worker",
       };
     },
+
     async recommendWindows(body) {
       return rankWindows(makeJob(body), forecast(vnow()), vnow());
     },
