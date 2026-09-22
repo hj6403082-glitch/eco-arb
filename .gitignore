@@ -25,3 +25,12 @@ backend/artifacts/
 node_modules/
 __pycache__/
 .pytest_cache/
+
+# Unpacking an archive inside the checkout creates backend/backend/... etc.
+# Those stale copies shadow nothing but confuse anyone reading the repo.
+/backend/backend/
+/frontend/frontend/
+/scripts/scripts/
+/demo/demo/
+/docs/docs/
+/.github/.github/
