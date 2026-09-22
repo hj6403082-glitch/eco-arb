@@ -94,7 +94,7 @@ which is why a 360× demo still takes real seconds to finish a job.
 
 ## What's actually built
 
-- FastAPI backend, 15 routes, **29 passing tests** including 14 regression tests
+- FastAPI backend, 19 routes, **61 passing tests** including 33 regression tests
 - APScheduler dispatch with a worker cap, state checkpointed to disk so a
   restart doesn't lose the queue
 - React 19 + Vite frontend, live forecast chart with the chosen window shaded
