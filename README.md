@@ -162,6 +162,45 @@ npm run build --prefix frontend
 
 Vite runs at port 5173 and proxies `/api` to port 8000. FastAPI serves `frontend/dist` directly. Restart the backend after the initial build.
 
+## Publishing
+
+The site is served from the `gh-pages` branch at **https://ecooarb.cv**, not
+from an Actions run. That is deliberate: branch-based Pages needs no workflow
+run, so the site can be redeployed even when Actions is not creating runs for
+this repository.
+
+```bash
+python scripts/publish.py
+```
+
+That rebuilds `frontend/dist`, copies the standalone page to `/demo/`, writes
+`CNAME` and `.nojekyll`, and force-pushes the result to `gh-pages`. The branch
+holds a build rather than history, so it is rebuilt from scratch every time.
+
+`CNAME` must be present in the published output or GitHub drops the custom
+domain on the next deploy -- which is why `publish.py` writes it rather than
+leaving it to be committed by hand.
+
+One-time setup, in the repository's Settings:
+
+- **Pages -> Source:** Deploy from a branch -> `gh-pages` -> `/ (root)`
+- **Pages -> Custom domain:** `ecooarb.cv`, then Save
+- **Pages -> Enforce HTTPS:** tick it once the certificate is issued (GitHub
+  needs the DNS records below to resolve first, which can take up to an hour)
+
+DNS, at the registrar:
+
+| Type | Name | Value |
+|---|---|---|
+| A | `@` | `185.199.108.153` |
+| A | `@` | `185.199.109.153` |
+| A | `@` | `185.199.110.153` |
+| A | `@` | `185.199.111.153` |
+| CNAME | `www` | `krishiyswim23-swagger.github.io.` |
+
+All four A records are needed; they are GitHub's anycast addresses, not
+alternatives to choose between.
+
 ## Prototype boundary
 
 The service binds to loopback. It has no authentication, tenant isolation, measured-electricity integration or distributed queue. Keep one backend worker. Add those controls before public deployment. The CPU workload is real but illustrative, not a production cloud training service.
