@@ -11,6 +11,7 @@ build, not history, and the source history lives on the real branch.
 """
 from __future__ import annotations
 
+import argparse
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,12 @@ def npm() -> str:
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--no-domain", action="store_true",
+                    help="publish without CNAME, so the github.io URL serves the "
+                         "site directly instead of redirecting to the custom domain")
+    args = ap.parse_args()
+
     frontend = ROOT / "frontend"
     dist = frontend / "dist"
 
@@ -53,8 +60,14 @@ def main() -> int:
     shutil.copy(ROOT / "demo" / "eco-arb-terminal.html", demo / "index.html")
 
     # CNAME pins the custom domain; without it GitHub drops the domain on the
-    # next deploy. .nojekyll stops Jekyll mangling Vite's hashed asset names.
-    (dist / "CNAME").write_text(DOMAIN + "\n", encoding="utf-8")
+    # next deploy. It also makes GitHub 301 the github.io URL to the custom
+    # domain, so while DNS is still being set up that URL looks broken --
+    # --no-domain omits it so the github.io URL can be used to check the build.
+    cname = dist / "CNAME"
+    if args.no_domain:
+        cname.unlink(missing_ok=True)
+    else:
+        cname.write_text(DOMAIN + "\n", encoding="utf-8")
     (dist / ".nojekyll").write_text("", encoding="utf-8")
 
     origin = run(["git", "remote", "get-url", "origin"], ROOT).strip()
@@ -72,7 +85,12 @@ def main() -> int:
         run(["git", "push", "-q", "--force", "origin", BRANCH], staged)
 
     print(f"\n  Published {source} to {BRANCH}.")
-    print(f"  https://{DOMAIN}/  (and /demo/ for the standalone page)")
+    if args.no_domain:
+        print("  No CNAME, so the site serves at the github.io URL:")
+        print("  https://krishiyswim23-swagger.github.io/ECO---ARB/")
+        print("  Re-run without --no-domain once DNS is in place.")
+    else:
+        print(f"  https://{DOMAIN}/  (and /demo/ for the standalone page)")
     print("  GitHub rebuilds the site within a minute or so.")
     return 0
 
