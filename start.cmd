@@ -18,10 +18,9 @@ if errorlevel 1 goto failed
 call npm.cmd run build --prefix frontend
 if errorlevel 1 goto failed
 :launch
-<<<<<<< HEAD
-set ECO_ARB_DEMO_MODE=scenario
-=======
->>>>>>> 2d0ad55 (Complete self-contained climate scheduling demo)
+rem Real provider data by default, matching start.ps1 and start.sh. For the
+rem labelled synthetic RUN/WAIT/SHIFT walkthrough, either start it from the
+rem Simulation tab or set ECO_ARB_DEMO_MODE=scenario before running this.
 echo.
 echo Open http://127.0.0.1:8000 in your browser after Application startup complete.
 echo Keep this window open. Press Ctrl+C to stop the server.

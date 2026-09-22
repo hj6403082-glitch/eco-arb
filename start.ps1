@@ -1,7 +1,11 @@
 param([string]$Python = '', [switch]$Rebuild, [int]$Port = 8000)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
-$env:ECO_ARB_DEMO_MODE = 'scenario'
+# Real provider data by default: the live UK national feed and NESO regional
+# forecasts. Forcing scenario mode here made every number on screen synthetic,
+# including the Indian regions, which is not what you want to demo unprompted.
+# Start the labelled walkthrough from the Simulation tab, or set
+# $env:ECO_ARB_DEMO_MODE = 'scenario' yourself before running this.
 if (-not (Test-Path '.venv/Scripts/python.exe')) {
     if (-not $Python) {
         $bundled = Join-Path $env:USERPROFILE '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'

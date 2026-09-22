@@ -1,0 +1,16 @@
+# Normalise line endings in the repository. Windows checkouts wrote CRLF while
+# Linux wrote LF, so git saw every line of README.md, WHATS-INSIDE.md and
+# start.cmd as changed and raised whole-file conflicts whose two sides were
+# byte-identical once normalised. Storing LF ends that class of conflict.
+* text=auto eol=lf
+
+# Batch files need CRLF on disk to be safe for cmd.exe.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Never touch binaries.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pptx binary
+*.zip binary
