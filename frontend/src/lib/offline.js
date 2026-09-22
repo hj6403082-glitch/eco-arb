@@ -24,6 +24,105 @@ const REN_AT_ZERO = 95.0, REN_AT_MAX = 5.0, CALIB_MAX = 400.0;
 const LOG_RING = 200;
 const SLOT_MS = SLOT_MINUTES * 60000;
 
+// --- Generation mix -> intensity. Port of backend/app/emissions.py. ---------
+// Direct combustion gCO2/kWh, the same basis the UK Carbon Intensity API
+// publishes, so a derived figure and a provider one sit on one axis.
+const EMISSION_FACTORS = {
+  coal: 937, lignite: 1050, gas: 394, ccgt: 394, oil: 935, diesel: 935,
+  naphtha: 700, nuclear: 0, hydro: 0, wind: 0, solar: 0, biomass: 120,
+  bagasse: 120, pumped_storage: 0, battery: 0, other: 300,
+};
+const RENEWABLE_FUELS = new Set(["hydro", "wind", "solar", "biomass", "bagasse"]);
+const FACTOR_BASIS = "direct combustion gCO2/kWh, the same basis the UK Carbon Intensity API publishes, so derived and provider figures are comparable";
+const FUEL_ALIASES = {
+  coal_thermal: "coal", thermal: "coal", thermal_coal: "coal",
+  gas_naphtha_diesel: "gas", gas_turbine: "gas", solar_pv: "solar",
+  wind_power: "wind", large_hydro: "hydro", small_hydro: "hydro", hydel: "hydro",
+  res: "other", other_res: "other", renewable: "other",
+  nuclear_power: "nuclear", storage: "battery",
+};
+const normaliseFuel = (name) => {
+  let key = String(name).trim().toLowerCase().replace(/[ -]/g, "_");
+  key = FUEL_ALIASES[key] ?? key;
+  return key in EMISSION_FACTORS ? key : "other";
+};
+function intensityFromMix(mix) {
+  const normalised = {};
+  for (const [fuel, output] of Object.entries(mix)) {
+    const value = Number(output);
+    if (!Number.isFinite(value)) throw new Error(`Generation for '${fuel}' is not a number`);
+    if (value < 0) throw new Error(`Generation for '${fuel}' cannot be negative`);
+    if (value) { const k = normaliseFuel(fuel); normalised[k] = (normalised[k] ?? 0) + value; }
+  }
+  const total = Object.values(normalised).reduce((a, b) => a + b, 0);
+  if (total <= 0) throw new Error("Generation mix totals zero; nothing to derive an intensity from");
+  let emitted = 0, renewable = 0;
+  for (const [f, mw] of Object.entries(normalised)) {
+    emitted += mw * EMISSION_FACTORS[f];
+    if (RENEWABLE_FUELS.has(f)) renewable += mw;
+  }
+  return { intensity: round(emitted / total, 1), renewable: round(renewable / total * 100, 1), normalised };
+}
+const unknownFuels = (mix) => [...new Set(Object.keys(mix).filter((n) => {
+  const raw = String(n).trim().toLowerCase().replace(/[ -]/g, "_");
+  return !(raw in EMISSION_FACTORS) && normaliseFuel(n) === "other" && raw !== "other";
+}))].sort();
+
+// --- Seasonal ridge regression. Port of backend/app/learning.py. ------------
+function modelFeatures(ms) {
+  const d = new Date(ms), hour = d.getUTCHours() + d.getUTCMinutes() / 60;
+  const out = [1];
+  for (const h of [1, 2, 3]) {
+    const angle = 2 * Math.PI * h * hour / 24;
+    out.push(Math.sin(angle), Math.cos(angle));
+  }
+  return out;
+}
+function solveSystem(matrix, values) {
+  const n = values.length;
+  const a = matrix.map((row, i) => [...row, values[i]]);
+  for (let i = 0; i < n; i++) {
+    let pivot = i;
+    for (let r = i; r < n; r++) if (Math.abs(a[r][i]) > Math.abs(a[pivot][i])) pivot = r;
+    [a[i], a[pivot]] = [a[pivot], a[i]];
+    const scale = a[i][i];
+    if (Math.abs(scale) < 1e-12) throw new Error("Training matrix is singular");
+    a[i] = a[i].map((v) => v / scale);
+    for (let r = 0; r < n; r++) {
+      if (r === i) continue;
+      const factor = a[r][i];
+      a[r] = a[r].map((x, k) => x - factor * a[i][k]);
+    }
+  }
+  return a.map((row) => row[n]);
+}
+function fitModel(rows) {
+  const xs = rows.map((r) => modelFeatures(Date.parse(r.timestamp)));
+  const ys = rows.map((r) => r.intensity);
+  const n = xs[0].length;
+  const matrix = Array.from({ length: n }, (_, i) =>
+    Array.from({ length: n }, (_, j) =>
+      xs.reduce((acc, x) => acc + x[i] * x[j], 0) + (i === j && i ? 0.1 : 0)));
+  const values = Array.from({ length: n }, (_, i) =>
+    xs.reduce((acc, x, k) => acc + x[i] * ys[k], 0));
+  return solveSystem(matrix, values);
+}
+const predictIntensity = (coefficients, ms) =>
+  Math.max(0, Math.min(1500, modelFeatures(ms).reduce((acc, x, i) => acc + coefficients[i] * x, 0)));
+
+function syntheticHistory() {
+  const end = Math.floor(Date.now() / 3600000) * 3600000;
+  const rows = [];
+  for (let i = 0; i < 14 * 48; i++) {
+    const when = end - 30 * 60000 * (14 * 48 - i);
+    const d = new Date(when), hour = d.getUTCHours() + d.getUTCMinutes() / 60;
+    let value = 210 + 75 * Math.sin(2 * Math.PI * (hour - 11) / 24);
+    value += 24 * Math.cos(4 * Math.PI * hour / 24) + 8 * Math.sin(i * 1.71);
+    rows.push({ timestamp: iso(when), intensity: value });
+  }
+  return rows;
+}
+
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
 const halfHourOfDay = (ms) => { const d = new Date(ms); return Math.floor((d.getUTCHours() * 60 + d.getUTCMinutes()) / SLOT_MINUTES); };
 const floorToSlot = (ms) => Math.floor(ms / SLOT_MS) * SLOT_MS;
@@ -285,6 +384,11 @@ export function createOfflineBackend() {
   };
   const indiaAvailable = Object.keys(recordedIndia.intensity_by_half_hour_utc || {}).length > 0;
 
+  const importedRegions = new Map();
+  const importedSources = new Map();
+  let modelCoefficients = null;
+  let modelReport = { trained: false, algorithm: "seasonal ridge regression",
+                      note: "Train on the Intelligence page to enable learned forecasts." };
   let liveRows = {};
   const forecast = (fromMs) => {
     const first = floorToSlot(fromMs);
@@ -447,6 +551,75 @@ export function createOfflineBackend() {
       finished_iso: null, result: null, progress: 0 };
   };
 
+  // Mirrors RegionRegistry.ingest: a supported region, at least two rows, all
+  // on UTC half-hour boundaries, consecutive, finite and in range, and at
+  // least one of them still in the future. A bad paste is rejected with the
+  // reason rather than silently half-imported.
+  const IMPORTABLE = new Set(["gb-london", "gb-scotland", "in", "in-north", "in-south"]);
+  function ingestRegion(region, rows, source, kind) {
+    if (!IMPORTABLE.has(region)) throw new Error("A supported region is required");
+    if (!Array.isArray(rows) || rows.length < 2) throw new Error("A supported region and at least two rows are required");
+    const sorted = [...rows].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+    for (let i = 0; i < sorted.length; i++) {
+      const at = Date.parse(sorted[i].timestamp);
+      if (!Number.isFinite(at)) throw new Error(`'${sorted[i].timestamp}' is not a valid ISO timestamp`);
+      const value = sorted[i].intensity_gco2_kwh;
+      if (!Number.isFinite(value) || value < 0 || value > 1500 || at !== floorToSlot(at))
+        throw new Error("Use finite 0-1500 gCO2/kWh values at UTC half-hour boundaries");
+      if (i && at - Date.parse(sorted[i - 1].timestamp) !== SLOT_MS)
+        throw new Error("Forecast must have consecutive half-hour rows, without duplicates or gaps");
+    }
+    if (Date.parse(sorted[sorted.length - 1].timestamp) <= vnow())
+      throw new Error("Import must include future forecast intervals");
+    importedRegions.set(region, sorted);
+    importedSources.set(region, source);
+    log("IMPORT", `${sorted.length} intervals imported for ${region} (${kind}).`);
+  }
+
+  // Mirrors LearnedForecast.train: chronological holdout of the last 48
+  // observations, scored against a previous-day persistence baseline, and the
+  // refit on everything happens only after that evaluation.
+  function trainOn(rows, dataset) {
+    const sorted = [...rows].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+    if (sorted.length < 192) throw new Error("At least four days of half-hour observations are required");
+    const seen = new Set();
+    for (const r of sorted) {
+      const at = Date.parse(r.timestamp);
+      if (seen.has(at) || !Number.isFinite(r.intensity) || r.intensity < 0 || r.intensity > 1500)
+        throw new Error("History contains duplicate timestamps or invalid intensities");
+      seen.add(at);
+    }
+    const split = sorted.length - 48;
+    const train = sorted.slice(0, split), test = sorted.slice(split);
+    const weights = fitModel(train);
+    const errors = test.map((r) => Math.abs(predictIntensity(weights, Date.parse(r.timestamp)) - r.intensity));
+    const byStamp = new Map(train.map((r) => [Date.parse(r.timestamp), r.intensity]));
+    const lastTrain = train[train.length - 1].intensity;
+    const baselineErr = test.map((r) =>
+      Math.abs((byStamp.get(Date.parse(r.timestamp) - 86400000) ?? lastTrain) - r.intensity));
+    const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const mae = mean(errors), baselineMae = mean(baselineErr);
+    const ranked = [...errors].sort((a, b) => a - b);
+    modelReport = {
+      trained: true, algorithm: "seasonal ridge regression", dataset,
+      train_samples: train.length, test_samples: test.length,
+      holdout: "last 48 available observations, chronological; no refit before evaluation",
+      mae_gco2_kwh: round(mae, 3), baseline_mae_gco2_kwh: round(baselineMae, 3),
+      baseline: "previous day at the same half-hour; last training value if unavailable",
+      beats_baseline: mae < baselineMae, trained_at: iso(Date.now()),
+      training_end: train[train.length - 1].timestamp,
+      validation_start: test[0].timestamp,
+      observations_end: sorted[sorted.length - 1].timestamp,
+      residual_p90_gco2_kwh: round(ranked[Math.floor(0.9 * (ranked.length - 1))], 3),
+      uncertainty_note: "Historical validation residual, not a calibrated prediction interval",
+      scope: "GB national only; no transfer to Indian regions",
+      trained_in: "browser",
+    };
+    modelCoefficients = fitModel(sorted);
+    log("MODEL", `Trained on ${dataset}; validation MAE ${modelReport.mae_gco2_kwh} gCO2/kWh.`);
+    return { ...modelReport };
+  }
+
   return {
     offline: true,
     async getState() {
@@ -502,16 +675,140 @@ export function createOfflineBackend() {
             error: null, execution: "local demonstration only" },
           ...[["gb-london", "London", "GB"], ["gb-scotland", "North Scotland", "GB"],
               ["in-north", "India \u00b7 Northern grid", "IN"], ["in-south", "India \u00b7 Southern grid", "IN"]]
-            .map(([id, name, country]) => ({
-              id, name, country, available: false, current: null,
-              source: "Needs the local backend; run start.ps1 for regional feeds",
-              error: null, execution: "local demonstration only" })),
+            .map(([id, name, country]) => {
+              // An operator import makes a zonal region live for the session.
+              const rows = (importedRegions.get(id) ?? []).filter((r) => Date.parse(r.timestamp) + SLOT_MS > now);
+              return { id, name, country, available: rows.length > 0,
+                current: rows.length ? wire(rows[0]) : null,
+                source: importedSources.get(id)
+                  ?? "No provider connected; import a forecast or a generation mix below",
+                error: null, execution: "local demonstration only" };
+            }),
         ],
-        model: { trained: false, algorithm: "seasonal ridge regression",
-                 note: "Training needs the local backend; run start.ps1" },
+        model: { ...modelReport },
         data_mode: "live",
         execution_mode: "browser demonstration; no remote cloud worker",
       };
+    },
+
+    // --- Operator imports, the model, and the guided scenario ---------------
+    // These used to require the local backend. They are ports of the same
+    // server code, so a hosted page is a working application rather than a
+    // brochure with half its buttons disabled.
+
+    async getEmissionFactors() {
+      return { basis: FACTOR_BASIS, unit: "gCO2 per kWh generated", factors: { ...EMISSION_FACTORS } };
+    },
+
+    async getRegionForecast(region) {
+      const now = vnow();
+      if (region === "gb") return { region, forecast: forecast(now).map(wire) };
+      if (region === "in" && indiaAvailable) {
+        const first = floorToSlot(now);
+        const rows = [];
+        for (let k = 0; k < SLOTS_PER_DAY + 1; k++) {
+          const slot = indiaSlot(first + k * SLOT_MS);
+          if (slot) rows.push(wire(slot));
+        }
+        return { region, forecast: rows };
+      }
+      const rows = (importedRegions.get(region) ?? []).filter((r) => Date.parse(r.timestamp) + SLOT_MS > now);
+      return { region, forecast: rows.map(wire) };
+    },
+
+    async importForecast(body) {
+      const rows = (body?.rows ?? []).map((r) => ({
+        timestamp: r.timestamp,
+        intensity_gco2_kwh: Number(r.intensity_gco2_kwh),
+        intensity: Number(r.intensity_gco2_kwh),
+        renewable_pct: r.renewable_pct ?? deriveRenewablePct(Number(r.intensity_gco2_kwh)),
+        price: modelPrice(Number(r.intensity_gco2_kwh), Date.parse(r.timestamp)),
+        live: false, source_kind: "imported",
+        renewable_basis: r.renewable_pct != null ? "operator-supplied" : "derived proxy",
+      }));
+      ingestRegion(body?.region, rows, body?.source_name ?? "Operator-supplied forecast", "imported");
+      return { imported: rows.length, region: body.region,
+               basis: "operator-supplied forecast; provider authenticity is not verified" };
+    },
+
+    async importGenerationMix(body) {
+      const derived = [];
+      const flagged = new Set();
+      for (const row of body?.rows ?? []) {
+        let result;
+        try {
+          result = intensityFromMix(row.mix ?? {});
+        } catch (e) {
+          throw new Error(`${row.timestamp}: ${e.message}`);
+        }
+        for (const f of unknownFuels(row.mix ?? {})) flagged.add(f);
+        derived.push({
+          timestamp: row.timestamp,
+          intensity_gco2_kwh: result.intensity, intensity: result.intensity,
+          // Measured from the mix rather than back-calculated from intensity,
+          // which is better provenance than the UK national figure.
+          renewable_pct: result.renewable,
+          price: modelPrice(result.intensity, Date.parse(row.timestamp)),
+          live: false, source_kind: "derived_from_generation_mix",
+          renewable_basis: "measured from the supplied generation mix",
+        });
+      }
+      ingestRegion(body?.region, derived, body?.source_name ?? "Operator-supplied generation mix",
+                   "derived_from_generation_mix");
+      return { imported: derived.length, region: body.region,
+               intensity_basis: FACTOR_BASIS,
+               renewable_basis: "measured from the supplied generation mix",
+               unrecognised_fuels: [...flagged].sort() };
+    },
+
+    async trainModel(dataset) {
+      let rows, label;
+      if (dataset === "public_history") {
+        // The Carbon Intensity API is CORS-open, so the page can train on the
+        // same real history the server would.
+        const end = Math.floor(Date.now() / 3600000) * 3600000 - 3600000;
+        const start = end - 14 * 86400000;
+        let payload;
+        try {
+          const res = await fetch(`https://api.carbonintensity.org.uk/intensity/${iso(start)}/${iso(end)}`,
+                                  { headers: { Accept: "application/json" } });
+          if (!res.ok) throw new Error(`upstream returned ${res.status}`);
+          payload = await res.json();
+        } catch (e) {
+          throw new Error(`Could not reach the UK Carbon Intensity API (${e.message}). `
+                          + "Use the labelled synthetic fixture instead.");
+        }
+        rows = (payload.data ?? [])
+          .filter((r) => r?.intensity?.actual != null)
+          .map((r) => ({ timestamp: r.from, intensity: Number(r.intensity.actual) }));
+        label = "public UK historical actual intensity";
+      } else {
+        rows = syntheticHistory();
+        label = "synthetic demonstration";
+      }
+      return trainOn(rows, label);
+    },
+
+    async getModelForecast() {
+      if (!modelCoefficients) throw new Error("Train a model on the Intelligence page first");
+      const first = floorToSlot(vnow());
+      const rows = [];
+      for (let k = 0; k < SLOTS_PER_DAY + 1; k++) {
+        const at = first + k * SLOT_MS;
+        const value = predictIntensity(modelCoefficients, at);
+        rows.push({ timestamp: iso(at), intensity_gco2_kwh: round(value, 1),
+                    renewable_pct: deriveRenewablePct(value), price: modelPrice(value, at),
+                    live: false, source_kind: "learned_prediction",
+                    renewable_basis: "derived proxy" });
+      }
+      return { forecast: rows, model: { ...modelReport } };
+    },
+
+    async startScenario() {
+      await this.resetAll();
+      await this.seedDemo();
+      log("SCENARIO", "Guided scenario started in the browser.");
+      return { ok: true, note: "Browser scenario; workloads execute in this tab." };
     },
 
     async recommendWindows(body) {
