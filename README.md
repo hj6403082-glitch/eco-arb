@@ -131,6 +131,26 @@ Example payload:
 
 ## Development and checks
 
+One command runs everything CI runs -- engine tests, lint, build, and the
+end-to-end browser smoke -- and exits non-zero if anything fails:
+
+```powershell
+.\verify.cmd            # everything
+.\verify.cmd --quick    # skip the browser smoke
+```
+
+```bash
+python scripts/verify.py           # macOS / Linux
+```
+
+Prefer this over reading the Actions tab. GitHub only starts a workflow run for
+a push authored by a human account -- a push made with an app token deliberately
+does not trigger one -- so the Actions tab can sit several commits behind while
+the code is perfectly healthy. `verify.py` runs against the working tree in
+front of you, which is the thing that actually matters before a demo.
+
+The individual steps, if you want them separately:
+
 ```powershell
 ./.venv/Scripts/python.exe -m pip install pytest
 ./.venv/Scripts/python.exe -m pytest backend/tests -q
