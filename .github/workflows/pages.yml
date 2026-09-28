@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [claude/eco-arb-hackathon-3knnwn]
+    branches: [main]
   workflow_dispatch:
 
 permissions:

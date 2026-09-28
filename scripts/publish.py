@@ -87,7 +87,7 @@ def main() -> int:
     print(f"\n  Published {source} to {BRANCH}.")
     if args.no_domain:
         print("  No CNAME, so the site serves at the github.io URL:")
-        print("  https://krishiyswim23-swagger.github.io/ECO---ARB/")
+        print("  https://hj6403082-glitch.github.io/eco-arb/")
         print("  Re-run without --no-domain once DNS is in place.")
     else:
         print(f"  https://{DOMAIN}/  (and /demo/ for the standalone page)")

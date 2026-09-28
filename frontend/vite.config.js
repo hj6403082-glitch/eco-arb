@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   // Relative asset URLs so the build works both at a domain root and under a
-  // GitHub Pages project subpath (/ECO---ARB/).
+  // GitHub Pages project subpath (/eco-arb/).
   base: './',
   plugins: [react(), tailwindcss()],
   server: {

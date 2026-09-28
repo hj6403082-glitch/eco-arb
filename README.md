@@ -185,7 +185,7 @@ That same file also makes GitHub **301 the `github.io` URL to the custom
 domain**, so while DNS is still being set up both URLs look broken: the custom
 domain does not resolve yet, and the `github.io` one only redirects to it.
 Publish with `--no-domain` to omit `CNAME` and check the build at
-`https://krishiyswim23-swagger.github.io/ECO---ARB/` first, then publish
+`https://hj6403082-glitch.github.io/eco-arb/` first, then publish
 normally once the DNS records resolve. Clearing the **Custom domain** box in
 Pages settings is needed too -- GitHub stores it server-side and will restore
 `CNAME` on its own otherwise.
@@ -208,7 +208,7 @@ DNS, at the registrar:
 | A | `@` | `185.199.109.153` |
 | A | `@` | `185.199.110.153` |
 | A | `@` | `185.199.111.153` |
-| CNAME | `www` | `krishiyswim23-swagger.github.io.` |
+| CNAME | `www` | `hj6403082-glitch.github.io.` |
 
 All four A records are needed; they are GitHub's anycast addresses, not
 alternatives to choose between.
