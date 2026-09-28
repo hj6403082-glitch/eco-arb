@@ -164,43 +164,34 @@ Vite runs at port 5173 and proxies `/api` to port 8000. FastAPI serves `frontend
 
 ## Publishing
 
-The site is served from the `gh-pages` branch at **https://ecooarb.cv**, not
-from an Actions run. That is deliberate: branch-based Pages needs no workflow
-run, so the site can be redeployed even when Actions is not creating runs for
-this repository.
+The site deploys to GitHub Pages from `.github/workflows/pages.yml` on every
+push to `main`. There is nothing to run by hand: push, and the workflow builds
+`frontend/dist`, copies the standalone page to `/demo/`, and deploys.
 
-```bash
-python scripts/publish.py
-```
-
-That rebuilds `frontend/dist`, copies the standalone page to `/demo/`, writes
-`CNAME` and `.nojekyll`, and force-pushes the result to `gh-pages`. The branch
-holds a build rather than history, so it is rebuilt from scratch every time.
-
-`CNAME` must be present in the published output or GitHub drops the custom
-domain on the next deploy -- which is why `publish.py` writes it rather than
-leaving it to be committed by hand.
-
-That same file also makes GitHub **301 the `github.io` URL to the custom
-domain**, so while DNS is still being set up both URLs look broken: the custom
-domain does not resolve yet, and the `github.io` one only redirects to it.
-Publish with `--no-domain` to omit `CNAME` and check the build at
-`https://hj6403082-glitch.github.io/eco-arb/` first, then publish
-normally once the DNS records resolve. Clearing the **Custom domain** box in
-Pages settings is needed too -- GitHub stores it server-side and will restore
-`CNAME` on its own otherwise.
-
-The working order is: confirm the build serves at the `github.io` URL, then add
-DNS, then set the custom domain.
+    https://hj6403082-glitch.github.io/eco-arb/
 
 One-time setup, in the repository's Settings:
 
-- **Pages -> Source:** Deploy from a branch -> `gh-pages` -> `/ (root)`
-- **Pages -> Custom domain:** `ecooarb.cv`, then Save
-- **Pages -> Enforce HTTPS:** tick it once the certificate is issued (GitHub
-  needs the DNS records below to resolve first, which can take up to an hour)
+- **Pages -> Source:** GitHub Actions
 
-DNS, at the registrar:
+That is the whole setup while the site lives at the `github.io` URL.
+
+### Putting it on a custom domain
+
+The order matters, and getting it wrong makes the site look broken for an hour.
+A `CNAME` file tells GitHub to **301 the `github.io` URL to the custom domain**,
+so if it is written before DNS resolves, *both* URLs fail: the domain does not
+answer, and the `github.io` one only redirects to it. The workflow therefore
+writes `CNAME` only when a repository variable says the domain is ready.
+
+1. Add the DNS records below at the registrar, deleting any pre-existing record
+   on `@` first -- parked domains usually ship with one, and a leftover keeps
+   the domain failing verification no matter what else is correct.
+2. Wait for them to resolve (minutes to about an hour).
+3. Set the repository variable **`CUSTOM_DOMAIN`** to the domain, under
+   Settings -> Secrets and variables -> Actions -> Variables.
+4. Push anything, or run the workflow by hand. The next deploy writes `CNAME`.
+5. Settings -> Pages -> **Enforce HTTPS**, once the certificate is issued.
 
 | Type | Name | Value |
 |---|---|---|
@@ -212,6 +203,19 @@ DNS, at the registrar:
 
 All four A records are needed; they are GitHub's anycast addresses, not
 alternatives to choose between.
+
+To move the site back off the custom domain, clear the `CUSTOM_DOMAIN` variable
+and clear the **Custom domain** box in Pages settings -- GitHub stores that
+server-side and will otherwise restore `CNAME` on its own.
+
+### The manual fallback
+
+`scripts/publish.py` builds the site and force-pushes it to the `gh-pages`
+branch, bypassing Actions entirely. It exists because this project spent a week
+on an account where GitHub created no workflow runs at all -- not for CI, and
+not for its own internal Pages builder -- which made every Actions-based route
+impossible. Actions works on the current account and the workflow above is the
+real path, so `publish.py` is a fallback, not the normal way to deploy.
 
 ## Prototype boundary
 

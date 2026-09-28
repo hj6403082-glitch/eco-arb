@@ -31,6 +31,15 @@ jobs:
       - run: |
           mkdir -p frontend/dist/demo
           cp demo/eco-arb-terminal.html frontend/dist/demo/index.html
+      # A CNAME makes GitHub 301 the github.io URL to the custom domain, so
+      # writing one before DNS resolves leaves BOTH URLs looking broken. It is
+      # therefore gated on a repository variable: set CUSTOM_DOMAIN (Settings ->
+      # Secrets and variables -> Actions -> Variables) once the DNS records
+      # answer, and the next deploy picks the domain up. Until then the site
+      # serves at the github.io URL and is reachable throughout.
+      - name: Attach the custom domain, if one is configured
+        if: vars.CUSTOM_DOMAIN != ''
+        run: echo "${{ vars.CUSTOM_DOMAIN }}" > frontend/dist/CNAME
       - uses: actions/upload-pages-artifact@v3
         with:
           path: frontend/dist
@@ -38,12 +47,9 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    # Pages has to be switched on by hand once (Settings -> Pages -> Source:
-    # GitHub Actions). Until that happens actions/deploy-pages returns 404 and
-    # would redden the whole repo, so the deployment is advisory: the build
-    # above still fails loudly on a genuine breakage. Drop this line once Pages
-    # is enabled if you want a failed deployment to fail the run.
-    continue-on-error: true
+    # No longer advisory. Pages is enabled on this repository and this job has
+    # deployed successfully, so a failure here is a real failure and should
+    # redden the run rather than pass quietly.
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
